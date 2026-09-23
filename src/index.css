@@ -1,0 +1,74 @@
+@import "tailwindcss";
+
+@theme {
+  --font-display: "Chakra Petch", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+
+  --color-ink-950: #07080c;
+  --color-ink-900: #0b0d13;
+  --color-ink-850: #10131b;
+  --color-ink-800: #151924;
+  --color-ink-700: #1d2230;
+  --color-ink-600: #2a3142;
+  --color-ink-400: #6b7489;
+  --color-ink-300: #9aa3b8;
+  --color-ink-100: #e6e9f2;
+
+  --color-gold: #f5b83d;
+  --color-gold-soft: #ffd27a;
+  --color-ally: #4cc9f0;
+  --color-foe: #f0506e;
+  --color-online: #3ddc84;
+  --color-away: #f5b83d;
+  --color-ingame: #8b7cf6;
+
+  --animate-sweep: sweep 2.8s linear infinite;
+  --animate-pulse-ring: pulse-ring 2.4s ease-out infinite;
+  --animate-rise: rise 0.35s ease-out both;
+
+  @keyframes sweep {
+    to { transform: rotate(360deg); }
+  }
+  @keyframes pulse-ring {
+    0% { transform: scale(0.6); opacity: 0.55; }
+    100% { transform: scale(1.35); opacity: 0; }
+  }
+  @keyframes rise {
+    from { transform: translateY(8px); opacity: 0; }
+    to { transform: none; opacity: 1; }
+  }
+}
+
+html, body, #root { height: 100%; }
+body {
+  @apply bg-ink-900 text-ink-100 font-sans antialiased;
+  background-image:
+    radial-gradient(1200px 600px at 80% -10%, rgb(76 201 240 / 0.07), transparent 60%),
+    radial-gradient(900px 500px at -10% 110%, rgb(245 184 61 / 0.05), transparent 60%);
+  background-attachment: fixed;
+}
+
+@utility panel {
+  @apply rounded-2xl border border-white/[0.07] bg-ink-850/80;
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.03);
+}
+@utility label {
+  @apply font-display text-[11px] font-semibold uppercase tracking-[0.18em] text-ink-400;
+}
+@utility btn {
+  @apply inline-flex items-center justify-center gap-2 rounded-lg px-3.5 py-2 text-sm font-semibold transition
+    disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ally;
+}
+@utility btn-ghost { @apply btn border border-white/10 bg-white/[0.03] text-ink-100 hover:bg-white/[0.07]; }
+@utility btn-gold {
+  @apply btn bg-gold text-ink-950 hover:bg-gold-soft font-display uppercase tracking-[0.12em];
+  box-shadow: 0 0 0 1px rgb(255 210 122 / 0.4), 0 10px 30px -10px rgb(245 184 61 / 0.6);
+}
+@utility input {
+  @apply w-full rounded-lg border border-white/10 bg-ink-950/60 px-3.5 py-2.5 text-sm text-ink-100 placeholder:text-ink-400
+    outline-none transition focus:border-ally/60 focus:ring-2 focus:ring-ally/20;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; }
+}
