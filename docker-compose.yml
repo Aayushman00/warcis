@@ -1,0 +1,94 @@
+name: arcline
+
+# ARCLINE local stack. Copy .env.example to .env first.
+#   docker compose up --build            -> http://localhost:8080
+#   docker compose --profile demo up bots   (optional: bot players to fill matches)
+
+x-service-env: &service-env
+  JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+  INTERNAL_TOKEN: ${INTERNAL_TOKEN:?set INTERNAL_TOKEN in .env}
+  PRESENCE_TIMEOUT_S: ${PRESENCE_TIMEOUT_S:-30}
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
+      POSTGRES_DB: ${POSTGRES_DB:-arcline}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/postgres:/docker-entrypoint-initdb.d:ro   # schema applied on first boot only
+    ports: ["127.0.0.1:${POSTGRES_PORT:-5432}:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 3s
+      retries: 20
+
+  mongodb:
+    image: mongo:8
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER:?}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:?}
+    volumes: [mongodata:/data/db]
+    ports: ["127.0.0.1:${MONGO_PORT:-27017}:27017"]
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 3s
+      retries: 20
+
+  auth-service:
+    build: { context: ./services, dockerfile: auth-service/Dockerfile }
+    environment:
+      <<: *service-env
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-arcline}
+      JWT_TTL_HOURS: ${JWT_TTL_HOURS:-12}
+    depends_on: { postgres: { condition: service_healthy } }
+
+  party-service:
+    build: { context: ./services, dockerfile: party-service/Dockerfile }
+    environment:
+      <<: *service-env
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-arcline}
+    depends_on: { postgres: { condition: service_healthy } }
+
+  matchmaking-service:
+    build: { context: ./services, dockerfile: matchmaking-service/Dockerfile }
+    environment:
+      <<: *service-env
+      MONGO_URL: mongodb://${MONGO_USER}:${MONGO_PASSWORD}@mongodb:27017/?authSource=admin
+      MONGO_DB: ${MONGO_DB:-arcline}
+      PARTY_SERVICE_URL: http://party-service:8000
+      READY_TIMEOUT_S: ${READY_TIMEOUT_S:-45}
+    depends_on:
+      mongodb: { condition: service_healthy }
+      party-service: { condition: service_started }
+
+  gateway:
+    build: ./gateway
+    environment:
+      AUTH_SERVICE_URL: http://auth-service:8000
+      PARTY_SERVICE_URL: http://party-service:8000
+      MATCHMAKING_SERVICE_URL: http://matchmaking-service:8000
+    ports: ["${GATEWAY_PORT:-8000}:8000"]
+    depends_on: [auth-service, party-service, matchmaking-service]
+
+  frontend:
+    build: ./frontend
+    ports: ["${FRONTEND_PORT:-8080}:80"]
+    depends_on: [gateway]
+
+  # Optional bot players (real API clients) so a 4v4 can form with few humans.
+  bots:
+    profiles: [demo]
+    build: ./scripts
+    command: ["python", "bots.py"]
+    environment:
+      API_URL: http://gateway:8000/api
+      BOT_PASSWORD: ${BOT_PASSWORD:-botpass123}
+      BOT_PARTIES: ${BOT_PARTIES:-2,1,3,1}
+    depends_on: [gateway]
+
+volumes:
+  pgdata:
+  mongodata:

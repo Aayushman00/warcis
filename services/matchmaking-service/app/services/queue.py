@@ -1,0 +1,251 @@
+"""Queue and match lifecycle on MongoDB.
+
+Queue entry status:  WAITING -> MATCHED | CANCELLED | INVALIDATED
+Match status:        FOUND -> IN_PROGRESS -> COMPLETED, or FOUND -> CANCELLED (ready check timed out)
+"""
+
+import asyncio
+import os
+import uuid
+from datetime import datetime, timedelta, timezone
+
+from arcline_common.errors import ApiError
+from pymongo.errors import DuplicateKeyError
+
+from app.db.mongo import events, matches, queue
+from app.services import party_client
+from app.services.packing import TEAM_SIZE, fifo, matchups, pack
+
+READY_TIMEOUT = timedelta(seconds=int(os.environ.get("READY_TIMEOUT_S", "45")))
+ACTIVE = ["FOUND", "IN_PROGRESS"]
+wake = asyncio.Event()  # set on enqueue so the matcher runs immediately instead of waiting a tick
+_tick_lock = asyncio.Lock()
+
+
+def now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+async def log(match_id: str, kind: str, user_id: str | None = None, **data) -> None:
+    await events.insert_one({"match_id": match_id, "type": kind, "user_id": user_id, "at": now(), "data": data})
+
+
+def _active_match_filter(user_id: str) -> dict:
+    return {"player_ids": user_id, "status": {"$in": ACTIVE}, "left": {"$ne": user_id}}
+
+
+# ─────────────── queue ───────────────
+
+
+async def enqueue(user_id: str, mode: str) -> dict:
+    party = await party_client.party_for_queue(user_id)  # authoritative snapshot from Postgres
+    size = len(party["members"])
+    if party["leader_id"] != user_id:
+        raise ApiError(403, "NOT_LEADER", "Only the party leader can start matchmaking.")
+    if party["pending_invites"]:
+        raise ApiError(409, "INVITES_PENDING", "Wait for pending invites to be answered or cancel them.")
+    if mode == "random" and size > 1:
+        raise ApiError(400, "RANDOM_SOLO_ONLY", "Random queue is solo only. Pick Squad to queue as a party.")
+    if not 1 <= size <= TEAM_SIZE:
+        raise ApiError(409, "INVALID_PARTY_SIZE", "Party size must be between 1 and 4.")
+
+    ids = [m["id"] for m in party["members"]]
+    existing = await queue.find_one({"party_id": party["party_id"], "status": "WAITING"})
+    if existing and existing["party_version"] == party["version"] and existing["mode"] == mode.upper():
+        return await status(user_id)  # idempotent: same party, same snapshot, already queued
+    if existing:  # party changed or switched mode since queuing: replace the stale entry
+        await queue.update_one({"_id": existing["_id"], "status": "WAITING"}, {"$set": {"status": "INVALIDATED"}})
+    if await queue.find_one({"player_ids": {"$in": ids}, "status": "WAITING"}):
+        raise ApiError(409, "ALREADY_QUEUED", "A party member is already in another queue.")
+    if await matches.find_one({"player_ids": {"$in": ids}, "status": {"$in": ACTIVE}, "left": {"$nin": ids}}):
+        raise ApiError(409, "IN_MATCH", "A party member is still in a match.")
+
+    try:
+        await queue.insert_one(
+            {
+                "queue_id": str(uuid.uuid4()),
+                "party_id": party["party_id"],
+                "party_version": party["version"],
+                "leader_id": party["leader_id"],
+                "mode": mode.upper(),
+                "players": party["members"],  # denormalized name snapshot: queue docs are short-lived
+                "player_ids": ids,
+                "size": size,
+                "joined_at": now(),
+                "status": "WAITING",
+            }
+        )
+    except DuplicateKeyError:
+        pass  # concurrent double-click: the unique partial index kept exactly one entry
+    wake.set()
+    return await status(user_id)
+
+
+async def cancel(user_id: str) -> None:
+    """Any party member may pull the party out of the queue. Idempotent."""
+    await queue.update_many({"player_ids": user_id, "status": "WAITING"}, {"$set": {"status": "CANCELLED", "ended_at": now()}})
+
+
+# ─────────────── status (polled by clients) ───────────────
+
+
+def _team_view(team: list[dict]) -> dict:
+    return {
+        "players": [p for e in team for p in e["players"]],
+        "parties": [{"party_id": e["party_id"], "players": e["player_ids"]} for e in team],
+    }
+
+
+def match_view(m: dict, user_id: str) -> dict:
+    mine = next(i for i, t in enumerate(m["teams"]) if any(p["id"] == user_id for p in t["players"]))
+    return {
+        "match_id": m["match_id"],
+        "mode": m["mode"],
+        "status": m["status"],
+        "created_at": m["created_at"].isoformat(),
+        "teams": m["teams"],
+        "my_team": mine,
+        "ready": m["ready"],
+        "entered": m["entered"],
+    }
+
+
+async def status(user_id: str) -> dict:
+    m = await matches.find_one(_active_match_filter(user_id), sort=[("created_at", -1)])
+    if m:
+        return {"state": "entered" if user_id in m["entered"] else "found", "match": match_view(m, user_id)}
+
+    entry = await queue.find_one({"player_ids": user_id, "status": "WAITING"})
+    if not entry:
+        last = await matches.find_one({"player_ids": user_id, "status": "CANCELLED"}, sort=[("created_at", -1)])
+        recent = last and now() - last["ended_at"] < timedelta(seconds=10)
+        return {"state": "idle", "notice": "Match cancelled: not every player readied up." if recent else None}
+
+    waiting = await queue.find({"status": "WAITING", "mode": entry["mode"]}).to_list(None)
+    team = next(t for t in pack(waiting) if any(e["queue_id"] == entry["queue_id"] for e in t))
+    # Show our own party first, then the parties we'd currently be grouped with.
+    team = [entry] + [e for e in fifo(team) if e["queue_id"] != entry["queue_id"]]
+    return {
+        "state": "searching",
+        "queue": {
+            "mode": entry["mode"],
+            "party_id": entry["party_id"],
+            "leader_id": entry["leader_id"],
+            "size": entry["size"],
+            "joined_at": entry["joined_at"].isoformat(),
+            "players_in_queue": sum(e["size"] for e in waiting),
+            "team": _team_view(team),
+        },
+    }
+
+
+# ─────────────── match lifecycle ───────────────
+
+
+async def _own_match(match_id: str, user_id: str) -> dict:
+    m = await matches.find_one({"match_id": match_id, "player_ids": user_id})
+    if not m:
+        raise ApiError(404, "MATCH_NOT_FOUND", "Match not found.")
+    return m
+
+
+async def ready(match_id: str, user_id: str) -> dict:
+    await _own_match(match_id, user_id)
+    r = await matches.update_one({"match_id": match_id, "status": "FOUND"}, {"$addToSet": {"ready": user_id}})
+    if r.matched_count == 0:
+        raise ApiError(409, "MATCH_NOT_READYABLE", "This match is no longer accepting ready checks.")
+    if r.modified_count:
+        await log(match_id, "PLAYER_READY", user_id)
+    return await status(user_id)
+
+
+async def enter(match_id: str, user_id: str) -> dict:
+    m = await _own_match(match_id, user_id)
+    if set(m["player_ids"]) - set(m["ready"]):
+        raise ApiError(409, "NOT_ALL_READY", "Waiting for every player to ready up.")
+    if m["status"] not in ACTIVE:
+        raise ApiError(409, "MATCH_CLOSED", "This match has ended.")
+    await matches.update_one({"match_id": match_id}, {"$addToSet": {"entered": user_id}, "$set": {"status": "IN_PROGRESS"}})
+    await log(match_id, "PLAYER_ENTERED", user_id)
+    return await status(user_id)
+
+
+async def leave(match_id: str, user_id: str) -> None:
+    """End-of-demo 'Return to hub'. Match completes once everyone has left."""
+    m = await _own_match(match_id, user_id)
+    await matches.update_one({"match_id": match_id}, {"$addToSet": {"left": user_id}})
+    await log(match_id, "PLAYER_LEFT", user_id)
+    if set(m["player_ids"]) <= set(m.get("left", [])) | {user_id}:
+        await matches.update_one({"match_id": match_id}, {"$set": {"status": "COMPLETED", "ended_at": now()}})
+        await log(match_id, "MATCH_COMPLETED")
+
+
+# ─────────────── matcher ───────────────
+
+
+async def _create_match(mode: str, a: list[dict], b: list[dict]) -> None:
+    entries = a + b
+    match_id = str(uuid.uuid4())
+    oids = [e["_id"] for e in entries]
+    # Claim: conditional update only succeeds for entries still WAITING. If a player
+    # cancelled in between, release whatever we did claim and let the next tick retry.
+    claimed = await queue.update_many(
+        {"_id": {"$in": oids}, "status": "WAITING"}, {"$set": {"status": "MATCHED", "match_id": match_id}}
+    )
+    if claimed.modified_count != len(oids):
+        await queue.update_many({"_id": {"$in": oids}, "match_id": match_id}, {"$set": {"status": "WAITING"}, "$unset": {"match_id": ""}})
+        return
+    try:
+        await matches.insert_one(
+            {
+                "match_id": match_id,
+                "mode": mode,
+                "status": "FOUND",
+                "teams": [_team_view(a), _team_view(b)],
+                "player_ids": [pid for e in entries for pid in e["player_ids"]],
+                "ready": [],
+                "entered": [],
+                "left": [],
+                "created_at": now(),
+            }
+        )
+    except Exception:  # compensate: put entries back in the queue
+        await queue.update_many({"match_id": match_id}, {"$set": {"status": "WAITING"}, "$unset": {"match_id": ""}})
+        raise
+    await log(match_id, "MATCH_CREATED", parties=[e["party_id"] for e in entries])
+
+
+async def tick() -> None:
+    async with _tick_lock:
+        # Expire ready checks nobody completed (closed tab, etc.).
+        expired = matches.find({"status": "FOUND", "created_at": {"$lt": now() - READY_TIMEOUT}})
+        async for m in expired:
+            await matches.update_one({"_id": m["_id"], "status": "FOUND"}, {"$set": {"status": "CANCELLED", "ended_at": now()}})
+            await log(m["match_id"], "MATCH_CANCELLED", reason="ready_timeout")
+
+        waiting = await queue.find({"status": "WAITING"}).to_list(None)
+        if not waiting:
+            return
+        # Re-validate every queued snapshot against Postgres in ONE call. If party-service
+        # is down this raises and no match is formed: we never match on unverified state.
+        stale = await party_client.stale(list({(e["party_id"], e["party_version"]) for e in waiting}))
+        if stale:
+            await queue.update_many({"party_id": {"$in": list(stale)}, "status": "WAITING"}, {"$set": {"status": "INVALIDATED"}})
+            waiting = [e for e in waiting if e["party_id"] not in stale]
+
+        for mode in ("SQUAD", "RANDOM"):
+            for a, b in matchups([e for e in waiting if e["mode"] == mode]):
+                await _create_match(mode, a, b)
+
+
+async def run_forever() -> None:
+    while True:
+        try:
+            await asyncio.wait_for(wake.wait(), timeout=1.0)
+        except TimeoutError:
+            pass
+        wake.clear()
+        try:
+            await tick()
+        except Exception as e:  # keep the loop alive; next tick retries
+            print(f"[matcher] tick failed: {e!r}", flush=True)
