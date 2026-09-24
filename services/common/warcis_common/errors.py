@@ -1,4 +1,4 @@
-"""Structured JSON errors shared by every ARCLINE service.
+"""Structured JSON errors shared by every WARCIS service.
 
 Every error body has the same shape so the frontend can render it uniformly:
     {"error": {"code": "PARTY_FULL", "message": "Party is full."}}

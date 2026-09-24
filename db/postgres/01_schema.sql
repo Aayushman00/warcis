@@ -1,4 +1,4 @@
--- ARCLINE relational schema.
+-- WARCIS relational schema.
 -- One PostgreSQL instance, one schema per owning service:
 --   auth.*   owned (written) by auth-service
 --   social.* owned (written) by party-service; it may READ auth.users for display/status.

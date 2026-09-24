@@ -1,7 +1,7 @@
 import asyncio
 from contextlib import asynccontextmanager
 
-from arcline_common.errors import install_error_handlers
+from warcis_common.errors import install_error_handlers
 from fastapi import FastAPI
 
 from app.api.routes import router
@@ -19,7 +19,7 @@ async def lifespan(_: FastAPI):
     task.cancel()
 
 
-app = FastAPI(title="ARCLINE matchmaking-service", lifespan=lifespan)
+app = FastAPI(title="WARCIS matchmaking-service", lifespan=lifespan)
 install_error_handlers(app)
 app.include_router(router)
 

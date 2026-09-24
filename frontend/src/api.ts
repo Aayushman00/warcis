@@ -12,7 +12,7 @@ export class ApiError extends Error {
 }
 
 // sessionStorage: survives refresh, but each tab is its own session so a multi-user demo works in one browser.
-const KEY = 'arcline.token'
+const KEY = 'warcis.token'
 export const token = {
   get: () => {
     try {
@@ -53,7 +53,7 @@ export async function api<T = unknown>(path: string, opts: { method?: string; bo
       body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
     })
   } catch {
-    throw new ApiError(0, 'NETWORK', 'Cannot reach ARCLINE servers.')
+    throw new ApiError(0, 'NETWORK', 'Cannot reach WARCIS servers.')
   }
   const data = r.status === 204 ? null : await r.json().catch(() => null)
   if (!r.ok) {

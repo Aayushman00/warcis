@@ -1,4 +1,4 @@
-from arcline_common.security import CurrentUser, current_user
+from warcis_common.security import CurrentUser, current_user
 from fastapi import APIRouter, Depends, Response
 
 from app.schemas.mm import QueueIn

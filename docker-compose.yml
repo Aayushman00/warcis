@@ -1,6 +1,6 @@
-name: arcline
+name: warcis
 
-# ARCLINE local stack. Copy .env.example to .env first.
+# WARCIS local stack. Copy .env.example to .env first.
 #   docker compose up --build            -> http://localhost:8080
 #   docker compose --profile demo up bots   (optional: bot players to fill matches)
 
@@ -15,7 +15,7 @@ services:
     environment:
       POSTGRES_USER: ${POSTGRES_USER:?}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
-      POSTGRES_DB: ${POSTGRES_DB:-arcline}
+      POSTGRES_DB: ${POSTGRES_DB:-warcis}
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./db/postgres:/docker-entrypoint-initdb.d:ro   # schema applied on first boot only
@@ -41,7 +41,7 @@ services:
     build: { context: ./services, dockerfile: auth-service/Dockerfile }
     environment:
       <<: *service-env
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-arcline}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-warcis}
       JWT_TTL_HOURS: ${JWT_TTL_HOURS:-12}
     depends_on: { postgres: { condition: service_healthy } }
 
@@ -49,7 +49,7 @@ services:
     build: { context: ./services, dockerfile: party-service/Dockerfile }
     environment:
       <<: *service-env
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-arcline}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-warcis}
     depends_on: { postgres: { condition: service_healthy } }
 
   matchmaking-service:
@@ -57,7 +57,7 @@ services:
     environment:
       <<: *service-env
       MONGO_URL: mongodb://${MONGO_USER}:${MONGO_PASSWORD}@mongodb:27017/?authSource=admin
-      MONGO_DB: ${MONGO_DB:-arcline}
+      MONGO_DB: ${MONGO_DB:-warcis}
       PARTY_SERVICE_URL: http://party-service:8000
       READY_TIMEOUT_S: ${READY_TIMEOUT_S:-45}
     depends_on:

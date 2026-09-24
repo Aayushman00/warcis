@@ -3,7 +3,7 @@ import os
 from pymongo import ASCENDING, DESCENDING, AsyncMongoClient
 
 client = AsyncMongoClient(os.environ["MONGO_URL"], tz_aware=True)
-db = client[os.environ.get("MONGO_DB", "arcline")]
+db = client[os.environ.get("MONGO_DB", "warcis")]
 
 queue = db["matchmaking_queue"]
 matches = db["matches"]

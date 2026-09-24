@@ -7,7 +7,7 @@ Every membership/leader change bumps parties.version (see matchmaking validation
 
 import uuid
 
-from arcline_common.errors import ApiError
+from warcis_common.errors import ApiError
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session

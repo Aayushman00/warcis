@@ -1,4 +1,4 @@
-# ARCLINE
+# WARCIS
 
 A distributed multiplayer gaming hub: accounts, friends, parties of 1–4 players, and
 squad matchmaking. It is a vertical slice for a Design of Distributed Database
@@ -55,7 +55,7 @@ shared `X-Internal-Token`. The gateway never routes those paths.
 ├── frontend/                 Vite app (+ Dockerfile, nginx.conf)
 ├── gateway/                  FastAPI reverse proxy
 ├── services/
-│   ├── common/arcline_common JWT verification + structured errors (shared)
+│   ├── common/warcis_common JWT verification + structured errors (shared)
 │   ├── auth-service/app/     main.py, api/, models/, schemas/, services/, db/
 │   ├── party-service/app/    same layout
 │   └── matchmaking-service/app/
@@ -118,7 +118,7 @@ Inspect the data while you go:
 ```bash
 docker compose exec postgres sh -c 'psql -U $POSTGRES_USER -d $POSTGRES_DB'
 #   select * from social.party_members;  select * from social.parties;
-docker compose exec mongodb sh -c 'mongosh -u $MONGO_INITDB_ROOT_USERNAME -p $MONGO_INITDB_ROOT_PASSWORD --authenticationDatabase admin arcline'
+docker compose exec mongodb sh -c 'mongosh -u $MONGO_INITDB_ROOT_USERNAME -p $MONGO_INITDB_ROOT_PASSWORD --authenticationDatabase admin warcis'
 #   db.matchmaking_queue.find({status:"WAITING"});  db.matches.find().sort({created_at:-1}).limit(1)
 ```
 

@@ -127,9 +127,9 @@ export const Logo = ({ className = '' }: { className?: string }) => (
         </linearGradient>
       </defs>
       <path d="M16 2l12 7v14l-12 7-12-7V9z" fill="#151924" stroke="url(#lg-logo)" strokeWidth="1.6" />
-      <path d="M10 22l6-13 6 13M12.6 17h6.8" stroke="url(#lg-logo)" strokeWidth="2.2" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M9 10.5l2.8 11L16 13.5l4.2 8 2.8-11" stroke="url(#lg-logo)" strokeWidth="2.2" fill="none" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
-    <span className="font-display text-lg font-bold tracking-[0.28em] text-ink-100">ARCLINE</span>
+    <span className="font-display text-lg font-bold tracking-[0.28em] text-ink-100">WARCIS</span>
   </div>
 )
 

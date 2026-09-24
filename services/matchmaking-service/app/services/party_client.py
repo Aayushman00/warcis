@@ -3,8 +3,8 @@
 import os
 
 import httpx
-from arcline_common.errors import ApiError
-from arcline_common.security import INTERNAL_TOKEN
+from warcis_common.errors import ApiError
+from warcis_common.security import INTERNAL_TOKEN
 
 _http = httpx.AsyncClient(
     base_url=os.environ["PARTY_SERVICE_URL"], headers={"X-Internal-Token": INTERNAL_TOKEN}, timeout=3.0

@@ -50,7 +50,7 @@ function Launcher({ me, setMe }: { me: Player; setMe: (p: Player | null) => void
   const [social, setSocial] = useState<SocialState | null>(null)
   const [mm, setMm] = useState<MMStatus>({ state: 'idle' })
   const [mode, setMode] = useState<Mode>('squad')
-  const [activity, setActivity] = useState(() => [{ id: 0, text: 'Signed in to ARCLINE', t: Date.now() }])
+  const [activity, setActivity] = useState(() => [{ id: 0, text: 'Signed in to WARCIS', t: Date.now() }])
   const [toast, setToast] = useState<string | null>(null)
   const [menu, setMenu] = useState(false)
   const prev = useRef<SocialState | null>(null)

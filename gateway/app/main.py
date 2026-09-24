@@ -1,4 +1,4 @@
-"""ARCLINE API gateway: one public origin, path-prefix routing to internal services.
+"""WARCIS API gateway: one public origin, path-prefix routing to internal services.
 
     /api/auth/*, /api/users/*   -> auth-service
     /api/social/*               -> party-service
@@ -34,7 +34,7 @@ async def lifespan(_: FastAPI):
     await http.aclose()
 
 
-app = FastAPI(title="ARCLINE gateway", lifespan=lifespan, docs_url=None, redoc_url=None)
+app = FastAPI(title="WARCIS gateway", lifespan=lifespan, docs_url=None, redoc_url=None)
 
 
 def error(status: int, code: str, message: str) -> JSONResponse:

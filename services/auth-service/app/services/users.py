@@ -4,8 +4,8 @@ from datetime import datetime, timedelta, timezone
 
 import bcrypt
 import jwt
-from arcline_common.errors import ApiError
-from arcline_common.security import JWT_ALG, JWT_SECRET
+from warcis_common.errors import ApiError
+from warcis_common.security import JWT_ALG, JWT_SECRET
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session

@@ -9,7 +9,7 @@ import os
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from arcline_common.errors import ApiError
+from warcis_common.errors import ApiError
 from pymongo.errors import DuplicateKeyError
 
 from app.db.mongo import events, matches, queue

@@ -1,4 +1,4 @@
-from arcline_common.security import CurrentUser, current_user, internal_only
+from warcis_common.security import CurrentUser, current_user, internal_only
 from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy.orm import Session
 

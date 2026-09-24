@@ -100,7 +100,7 @@ export function Auth({ onAuth }: { onAuth: (s: Session) => void }) {
           </button>
 
           <p className="mt-5 text-center text-xs text-ink-400">
-            {mode === 'in' ? 'New to ARCLINE? ' : 'Already have an account? '}
+            {mode === 'in' ? 'New to WARCIS? ' : 'Already have an account? '}
             <button type="button" onClick={() => (setMode(mode === 'in' ? 'up' : 'in'), setError(''))} className="font-semibold text-ally hover:underline">
               {mode === 'in' ? 'Create an account' : 'Sign in'}
             </button>

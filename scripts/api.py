@@ -1,4 +1,4 @@
-"""Minimal ARCLINE API client used by e2e.py and bots.py (goes through the public gateway)."""
+"""Minimal WARCIS API client used by e2e.py and bots.py (goes through the public gateway)."""
 
 import os
 
@@ -28,7 +28,7 @@ class Client:
         return r.json() if r.content else None
 
     def register(self, username: str, password: str) -> "Client":
-        s = self.call("POST", "/auth/register", {"username": username, "email": f"{username}@arcline.test", "password": password})
+        s = self.call("POST", "/auth/register", {"username": username, "email": f"{username}@warcis.test", "password": password})
         self.token, self.me = s["token"], s["user"]
         return self
 
