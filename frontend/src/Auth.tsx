@@ -1,7 +1,8 @@
 import { useState, type FormEvent } from 'react'
+import { api, type Session } from './api'
 import { Logo, WorldArt } from './ui'
 
-export function Auth({ onAuth }: { onAuth: (name: string) => void }) {
+export function Auth({ onAuth }: { onAuth: (s: Session) => void }) {
   const [mode, setMode] = useState<'in' | 'up'>('in')
   const [id, setId] = useState('')
   const [email, setEmail] = useState('')
@@ -9,21 +10,26 @@ export function Auth({ onAuth }: { onAuth: (name: string) => void }) {
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
 
-  const submit = (e: FormEvent) => {
+  // Client-side checks mirror the server's for fast feedback; the server re-validates everything.
+  const submit = async (e: FormEvent) => {
     e.preventDefault()
-    const name = id.trim().split('@')[0]
-    if (!name) return setError('Enter your username or email.')
+    const name = id.trim()
+    if (!name) return setError(mode === 'in' ? 'Enter your username or email.' : 'Choose a username.')
+    if (mode === 'up' && !/^[A-Za-z0-9_.-]{3,16}$/.test(name)) return setError('Username: 3–16 letters, numbers, _ . -')
     if (mode === 'up' && !/^\S+@\S+\.\S+$/.test(email)) return setError('Enter a valid email.')
     if (pw.length < 6) return setError('Password must be at least 6 characters.')
     setError('')
     setBusy(true)
-    setTimeout(() => onAuth(name.slice(0, 16)), 700) // fake auth round-trip
-  }
-
-  const demo = () => {
-    setMode('in')
-    setId('Nova')
-    setPw('arcline')
+    try {
+      const s =
+        mode === 'in'
+          ? await api<Session>('/auth/login', { method: 'POST', body: { login: name, password: pw } })
+          : await api<Session>('/auth/register', { method: 'POST', body: { username: name, email: email.trim(), password: pw } })
+      onAuth(s)
+    } catch (err) {
+      setError((err as Error).message)
+      setBusy(false)
+    }
   }
 
   return (
@@ -94,9 +100,9 @@ export function Auth({ onAuth }: { onAuth: (name: string) => void }) {
           </button>
 
           <p className="mt-5 text-center text-xs text-ink-400">
-            Prototype: any credentials work.{' '}
-            <button type="button" onClick={demo} className="font-semibold text-ally hover:underline">
-              Fill demo account
+            {mode === 'in' ? 'New to ARCLINE? ' : 'Already have an account? '}
+            <button type="button" onClick={() => (setMode(mode === 'in' ? 'up' : 'in'), setError(''))} className="font-semibold text-ally hover:underline">
+              {mode === 'in' ? 'Create an account' : 'Sign in'}
             </button>
           </p>
         </form>

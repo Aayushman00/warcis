@@ -235,7 +235,14 @@ def ensure_for_queue(db: Session, user_id: str) -> dict:
 
 
 def stale_parties(db: Session, refs: list[tuple[str, int]]) -> list[str]:
-    """Parties whose queued snapshot no longer matches Postgres (changed, disbanded, or missing)."""
+    """Parties whose queued snapshot no longer holds: changed, disbanded, missing, or a member went offline."""
     ids = [uid(i) for i, _ in refs]
     current = {str(p.id): p for p in db.scalars(select(Party).where(Party.id.in_(ids)))}
-    return [i for i, ver in refs if (p := current.get(i)) is None or p.status != "active" or p.version != ver]
+    offline = {
+        str(pid)
+        for pid, u in db.execute(
+            select(PartyMember.party_id, User).join(User, User.id == PartyMember.user_id).where(PartyMember.party_id.in_(ids))
+        ).tuples()
+        if presence(u) == "offline"
+    }
+    return [i for i, ver in refs if (p := current.get(i)) is None or p.status != "active" or p.version != ver or i in offline]

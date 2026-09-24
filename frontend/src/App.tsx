@@ -1,64 +1,126 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { api, setUnauthorizedHandler, token, type MMStatus, type PartyDTO, type SocialState } from './api'
 import { Auth } from './Auth'
-import { initialFriends, initialRequests, MAX_PARTY, mkPlayer, type Mode, type Player, type Status } from './data'
+import { MAX_PARTY, type Mode, type Player, type Status } from './data'
 import { FriendsPage, FriendsSidebar, Home, PartyPage, type Ctx, type Party, type View } from './Hub'
 import { Matchmaking } from './Matchmaking'
 import { Avatar, AvatarStatus, Icon, Logo, StatusDot } from './ui'
 
+const POLL_MS = 1500 // ponytail: HTTP polling for social + queue state; move to SSE/WebSocket when load matters
+const HEARTBEAT_MS = 10_000
+
 export default function App() {
   const [me, setMe] = useState<Player | null>(null)
-  return me ? <Launcher me={me} setMe={setMe} /> : <Auth onAuth={(name) => setMe(mkPlayer(name))} />
+  const [booting, setBooting] = useState(() => !!token.get())
+
+  // Restore the session from the stored JWT so a refresh lands back in the hub.
+  useEffect(() => {
+    setUnauthorizedHandler(() => (token.clear(), setMe(null)))
+    if (!token.get()) return
+    api<Player>('/users/me')
+      .then(setMe)
+      .catch(() => token.clear())
+      .finally(() => setBooting(false))
+  }, [])
+
+  if (booting)
+    return (
+      <div className="grid h-full place-items-center">
+        <Logo className="animate-pulse" />
+      </div>
+    )
+  return me ? (
+    <Launcher me={me} setMe={setMe} />
+  ) : (
+    <Auth
+      onAuth={(s) => {
+        token.set(s.token)
+        setMe(s.user)
+      }}
+    />
+  )
 }
+
+const soloParty = (me: Player): Party => ({ leaderId: me.id, members: [me], pending: [] })
+const toParty = (p: PartyDTO | null, me: Player): Party =>
+  p ? { leaderId: p.leader_id, members: p.members, pending: p.pending.map((x) => ({ ...x.user, inviteId: x.invite_id })) } : soloParty(me)
 
 function Launcher({ me, setMe }: { me: Player; setMe: (p: Player | null) => void }) {
   const [view, setView] = useState<View>('home')
-  const [friends, setFriends] = useState(initialFriends)
-  const [requestsIn, setRequestsIn] = useState(initialRequests)
-  const [requestsOut, setRequestsOut] = useState<Player[]>([])
-  const [party, setParty] = useState<Party>({ leaderId: me.id, members: [me], pending: [] })
+  const [social, setSocial] = useState<SocialState | null>(null)
+  const [mm, setMm] = useState<MMStatus>({ state: 'idle' })
   const [mode, setMode] = useState<Mode>('squad')
-  const [queue, setQueue] = useState<'idle' | 'searching'>('idle')
-  const [activity, setActivity] = useState([{ id: 0, text: 'Signed in to ARCLINE', t: Date.now() }])
-  const [partyInvite, setPartyInvite] = useState<{ from: Player; members: Player[] } | null>(null)
+  const [activity, setActivity] = useState(() => [{ id: 0, text: 'Signed in to ARCLINE', t: Date.now() }])
+  const [toast, setToast] = useState<string | null>(null)
   const [menu, setMenu] = useState(false)
-  const timers = useRef<number[]>([])
-  const partyRef = useRef(party)
-  partyRef.current = party
-
-  // ponytail: fire-and-forget timers stand in for server events; cleared on sign-out/unmount.
-  const later = (ms: number, fn: () => void) => void timers.current.push(window.setTimeout(fn, ms))
-  useEffect(() => () => timers.current.forEach(clearTimeout), [])
+  const prev = useRef<SocialState | null>(null)
+  const lastNotice = useRef<string | null>(null)
 
   const log = (text: string) => setActivity((a) => [{ id: Date.now() + Math.random(), text, t: Date.now() }, ...a].slice(0, 6))
+  const fail = (e: unknown) => setToast((e as Error).message)
 
-  // A friend invites you to their party a few seconds after sign-in, to demo "join party".
-  useEffect(() => {
-    const t = setTimeout(() => {
-      const vesper = friends.find((f) => f.name === 'Vesper')!
-      if (partyRef.current.members.some((m) => m.id === vesper.id)) return
-      setPartyInvite({ from: vesper, members: [vesper, mkPlayer('Rook')] })
-    }, 9000)
-    return () => clearTimeout(t)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  const refresh = useCallback(async () => {
+    const [s, m] = await Promise.all([api<SocialState>('/social/state'), api<MMStatus>('/matchmaking/status')])
+    setSocial(s)
+    setMm(m)
+    const notice = m.state === 'idle' ? (m.notice ?? null) : null
+    if (notice && notice !== lastNotice.current) setToast(notice)
+    lastNotice.current = notice
   }, [])
+
+  useEffect(() => {
+    const tick = () => void refresh().catch(() => {})
+    const beat = () => void api<Player>('/users/me/heartbeat', { method: 'POST' }).then(setMe).catch(() => {})
+    tick()
+    beat()
+    const a = setInterval(tick, POLL_MS)
+    const b = setInterval(beat, HEARTBEAT_MS)
+    return () => (clearInterval(a), clearInterval(b))
+  }, [refresh, setMe])
+
+  useEffect(() => {
+    if (!toast) return
+    const t = setTimeout(() => setToast(null), 4000)
+    return () => clearTimeout(t)
+  }, [toast])
+
+  // Turn server-side changes seen by polling into activity entries.
+  useEffect(() => {
+    const before = prev.current
+    prev.current = social
+    if (!before || !social) return
+    const was = new Set(before.party?.members.map((m) => m.id) ?? [])
+    const is = new Set(social.party?.members.map((m) => m.id) ?? [])
+    if (before.party?.id === social.party?.id) {
+      social.party?.members.filter((m) => !was.has(m.id) && m.id !== me.id).forEach((m) => log(`${m.name} joined the party`))
+      before.party?.members.filter((m) => !is.has(m.id) && m.id !== me.id).forEach((m) => log(`${m.name} left the party`))
+    }
+    const knew = new Set(before.friends.map((f) => f.id))
+    social.friends.filter((f) => !knew.has(f.id)).forEach((f) => log(`You and ${f.name} are now friends`))
+  }, [social, me.id])
+
+  /** Run a mutation, then re-sync from the server. Errors surface in the toast. */
+  const act = async (fn: () => Promise<unknown>, success?: string) => {
+    try {
+      await fn()
+      if (success) log(success)
+    } catch (e) {
+      fail(e)
+    }
+    await refresh().catch(() => {})
+  }
+
+  const friends = social?.friends ?? []
+  const requestsIn = (social?.requests.incoming ?? []).map((r) => ({ ...r.user, requestId: r.id }))
+  const requestsOut = (social?.requests.outgoing ?? []).map((r) => r.user)
+  const party = toParty(social?.party ?? null, me)
+  const partyInvite = social?.invitations[0] ?? null
+  const queueing = mm.state !== 'idle'
 
   const isLeader = party.leaderId === me.id
   const slotsUsed = party.members.length + party.pending.length
   const inParty = (id: string) => party.members.some((m) => m.id === id) || party.pending.some((m) => m.id === id)
-
-  const canInvite = (f: Player) =>
-    queue === 'idle' && slotsUsed < MAX_PARTY && !inParty(f.id) && (f.status === 'online' || f.status === 'away')
-
-  const invite = (f: Player) => {
-    if (!canInvite(f)) return
-    setParty((p) => ({ ...p, pending: [...p.pending, f] }))
-    log(`Invited ${f.name} to your party`)
-    later(f.status === 'away' ? 3200 : 1600, () => {
-      if (!partyRef.current.pending.some((x) => x.id === f.id)) return // cancelled or party changed meanwhile
-      setParty((p) => ({ ...p, pending: p.pending.filter((x) => x.id !== f.id), members: [...p.members, f] }))
-      log(`${f.name} joined the party`)
-    })
-  }
+  const canInvite = (f: Player) => !queueing && slotsUsed < MAX_PARTY && !inParty(f.id) && (f.status === 'online' || f.status === 'away')
 
   const ctx: Ctx = {
     me,
@@ -74,60 +136,58 @@ function Launcher({ me, setMe }: { me: Player; setMe: (p: Player | null) => void
     setMode,
     canInvite,
     inParty,
-    invite,
-    cancelInvite: (id) => setParty((p) => ({ ...p, pending: p.pending.filter((x) => x.id !== id) })),
+    invite: (f) => act(() => api('/social/party/invitations', { method: 'POST', body: { user_id: f.id } }), `Invited ${f.name} to your party`),
+    cancelInvite: (userId) => {
+      const inv = party.pending.find((p) => p.id === userId)
+      if (inv?.inviteId) act(() => api(`/social/party/invitations/${inv.inviteId}`, { method: 'DELETE' }))
+    },
     kick: (id) => {
       const m = party.members.find((x) => x.id === id)
-      setParty((p) => ({ ...p, members: p.members.filter((x) => x.id !== id) }))
-      if (m) log(`Removed ${m.name} from the party`)
+      act(() => api(`/social/party/members/${id}`, { method: 'DELETE' }), m && `Removed ${m.name} from the party`)
     },
-    leave: () => {
-      setParty({ leaderId: me.id, members: [me], pending: [] })
-      log('Left the party')
+    leave: () => act(() => api('/social/party/leave', { method: 'POST' }), 'Left the party'),
+    sendRequest: async (raw) => {
+      if (!raw.trim()) return 'Enter a username.'
+      try {
+        const r = await api<{ status: string; user: Player }>('/social/friend-requests', { method: 'POST', body: { username: raw.trim() } })
+        log(r.status === 'accepted' ? `You and ${r.user.name} are now friends` : `Sent friend request to ${r.user.name}`)
+        await refresh()
+        return null
+      } catch (e) {
+        return (e as Error).message
+      }
     },
-    sendRequest: (raw) => {
-      const name = raw.trim().replace(/#\d+$/, '')
-      const taken = [me, ...friends, ...requestsOut, ...requestsIn].some((p) => p.name.toLowerCase() === name.toLowerCase())
-      if (!name) return 'Enter a username.'
-      if (taken) return `${name} is already in your list.`
-      const p = mkPlayer(name)
-      setRequestsOut((r) => [...r, p])
-      log(`Sent friend request to ${name}`)
-      later(4000, () => {
-        setRequestsOut((r) => r.filter((x) => x.id !== p.id))
-        setFriends((f) => [p, ...f])
-        log(`${name} accepted your friend request`)
-      })
-      return null
-    },
-    acceptRequest: (p) => {
-      setRequestsIn((r) => r.filter((x) => x.id !== p.id))
-      setFriends((f) => [p, ...f])
-      log(`You and ${p.name} are now friends`)
-    },
-    declineRequest: (p) => setRequestsIn((r) => r.filter((x) => x.id !== p.id)),
-    matchmake: () => {
-      if (!isLeader || party.pending.length) return
-      setQueue('searching')
-      log(`Entered ${mode === 'squad' ? 'Squad' : 'Random'} queue (${party.members.length}/${MAX_PARTY})`)
-    },
+    acceptRequest: (p) => act(() => api(`/social/friend-requests/${p.requestId}/accept`, { method: 'POST' })),
+    declineRequest: (p) => act(() => api(`/social/friend-requests/${p.requestId}/reject`, { method: 'POST' })),
+    matchmake: () =>
+      act(
+        () => api('/matchmaking/queue', { method: 'POST', body: { mode } }),
+        `Entered ${mode === 'squad' ? 'Squad' : 'Random'} queue (${party.members.length}/${MAX_PARTY})`,
+      ),
   }
 
-  const joinInvite = () => {
+  const joinInvite = async () => {
     if (!partyInvite) return
-    setParty({ leaderId: partyInvite.from.id, members: [...partyInvite.members, me], pending: [] })
-    log(`Joined ${partyInvite.from.name}'s party`)
-    setPartyInvite(null)
+    await act(() => api(`/social/invitations/${partyInvite.id}/accept`, { method: 'POST' }), `Joined ${partyInvite.from.name}'s party`)
     setView('party')
   }
 
-  const setStatus = (status: Status) => {
-    setMe({ ...me, status })
+  const setStatus = async (status: Status) => {
     setMenu(false)
+    try {
+      setMe(await api<Player>('/users/me', { method: 'PATCH', body: { status } }))
+    } catch (e) {
+      fail(e)
+    }
+  }
+
+  const signOut = async () => {
+    await api('/auth/logout', { method: 'POST' }).catch(() => {})
+    token.clear()
+    setMe(null)
   }
 
   const online = friends.filter((f) => f.status !== 'offline').length
-  const queueing = queue !== 'idle'
   const nav: { id: View; label: string; icon: 'home' | 'users' | 'party'; badge?: string }[] = [
     { id: 'home', label: 'Home', icon: 'home' },
     { id: 'friends', label: 'Friends', icon: 'users', badge: requestsIn.length ? String(requestsIn.length) : undefined },
@@ -188,7 +248,7 @@ function Launcher({ me, setMe }: { me: Player; setMe: (p: Player | null) => void
                     </button>
                   ))}
                   <div className="my-1 h-px bg-white/5" />
-                  <button onClick={() => setMe(null)} className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-sm text-foe hover:bg-white/5">
+                  <button onClick={signOut} className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-sm text-foe hover:bg-white/5">
                     <Icon name="logout" /> Sign out
                   </button>
                 </div>
@@ -200,8 +260,15 @@ function Launcher({ me, setMe }: { me: Player; setMe: (p: Player | null) => void
 
       <div className="mx-auto flex w-full max-w-[1440px] flex-1 gap-6 p-4 lg:p-6">
         <main className="min-w-0 flex-1">
-          {queueing ? (
-            <Matchmaking party={party} mode={mode} me={me} onCancel={() => (setQueue('idle'), log('Left matchmaking queue'))} onExit={() => (setQueue('idle'), log('Match completed · returned to hub'))} />
+          {mm.state !== 'idle' ? (
+            <Matchmaking
+              status={mm}
+              me={me}
+              onCancel={() => act(() => api('/matchmaking/queue', { method: 'DELETE' }), 'Left matchmaking queue')}
+              onReady={(id) => act(() => api(`/matchmaking/matches/${id}/ready`, { method: 'POST' }))}
+              onEnter={(id) => act(() => api(`/matchmaking/matches/${id}/enter`, { method: 'POST' }))}
+              onExit={(id) => act(() => api(`/matchmaking/matches/${id}/leave`, { method: 'POST' }), 'Match completed · returned to hub')}
+            />
           ) : view === 'home' ? (
             <Home {...ctx} />
           ) : view === 'friends' ? (
@@ -227,7 +294,7 @@ function Launcher({ me, setMe }: { me: Player; setMe: (p: Player | null) => void
                 <b>{partyInvite.from.name}</b> invited you to their party
               </p>
               <p className="text-ink-400">
-                {partyInvite.members.length}/{MAX_PARTY} · Squad
+                {partyInvite.party.size}/{MAX_PARTY} · Squad
                 {party.members.length > 1 && ' · you will leave your current party'}
               </p>
             </div>
@@ -236,10 +303,20 @@ function Launcher({ me, setMe }: { me: Player; setMe: (p: Player | null) => void
             <button onClick={joinInvite} className="btn-gold flex-1">
               Join
             </button>
-            <button onClick={() => setPartyInvite(null)} className="btn-ghost flex-1">
+            <button onClick={() => act(() => api(`/social/invitations/${partyInvite.id}/decline`, { method: 'POST' }))} className="btn-ghost flex-1">
               Decline
             </button>
           </div>
+        </div>
+      )}
+
+      {toast && (
+        <div role="alert" className="panel fixed bottom-4 left-4 z-50 flex max-w-[min(24rem,calc(100vw-2rem))] animate-rise items-center gap-3 border-foe/40 bg-ink-800 px-4 py-3 text-sm shadow-2xl">
+          <span className="size-2 shrink-0 rounded-full bg-foe" />
+          <span>{toast}</span>
+          <button onClick={() => setToast(null)} aria-label="Dismiss" className="ml-auto text-ink-400 hover:text-ink-100">
+            <Icon name="x" />
+          </button>
         </div>
       )}
     </div>

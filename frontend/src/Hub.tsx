@@ -26,7 +26,7 @@ export interface Ctx {
   cancelInvite: (id: string) => void
   kick: (id: string) => void
   leave: () => void
-  sendRequest: (name: string) => string | null
+  sendRequest: (name: string) => Promise<string | null>
   acceptRequest: (p: Player) => void
   declineRequest: (p: Player) => void
   matchmake: () => void
@@ -422,9 +422,9 @@ export function FriendsPage(c: Ctx) {
   const on = c.friends.filter((f) => f.status !== 'offline')
   const off = c.friends.filter((f) => f.status === 'offline')
 
-  const submit = (e: FormEvent) => {
+  const submit = async (e: FormEvent) => {
     e.preventDefault()
-    const err = c.sendRequest(name)
+    const err = await c.sendRequest(name)
     setMsg(err ? { ok: false, text: err } : { ok: true, text: `Request sent to ${name.trim()}` })
     if (!err) setName('')
   }

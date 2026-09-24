@@ -3,6 +3,8 @@
     python scripts/e2e.py            (stack must be running; API_URL defaults to localhost:8000/api)
 
 Uses fresh random usernames each run, so it is safe to re-run against a live database.
+Assumes nobody else is queued (stop the demo bots first: `docker compose stop bots`,
+their queue entries expire once their heartbeat is older than PRESENCE_TIMEOUT_S).
 """
 
 import secrets
