@@ -226,9 +226,52 @@ class Game:
 
     # ─────────────── broadcast ───────────────
 
-    def snapshot(self, now: int, connected=frozenset()) -> dict:
-        """connected: ids with a live socket. Others (bots, dropped clients) stay in the
-        match as placeholders: they spawn, can be shot and hold flags, but send no input."""
+    # ─────────────── checkpoint (low-frequency persistence) ───────────────
+    # Times are the caller's clock (epoch ms in the service), so they survive a restart.
+
+    def checkpoint(self, now: int) -> dict:
+        return {
+            "status": "ENDED" if self.ended else "PLAYING",
+            "saved_at": now,
+            "started": self.started,
+            "winner": TEAMS[self.winner] if self.ended else None,
+            "capturer": self.capturer,
+            "players": [
+                {"id": p.id, "name": p.name, "team": TEAMS[p.team], "x": p.x, "y": p.y, "hp": p.hp,
+                 "alive": p.alive, "respawnAt": p.respawn_at, "carryingFlag": p.carrying_flag}
+                for p in self.players.values()
+            ],
+            "flags": [
+                {"team": TEAMS[f.team], "state": f.state, "x": f.x, "y": f.y, "carrierId": f.carrier_id,
+                 "returnAt": f.dropped_at + FLAG_RETURN_MS if f.state == "DROPPED" else None}
+                for f in self.flags
+            ],
+        }
+
+    @classmethod
+    def restore(cls, cp: dict, now: int) -> "Game":
+        """Rebuild from checkpoint(). Raises ValueError on an inconsistent checkpoint
+        rather than inventing state."""
+        teams = [[p for p in cp["players"] if p["team"] == t] for t in TEAMS]
+        g = cls(teams, cp["started"])
+        g.last = now  # held keys are not persisted, and no catch-up step across the downtime
+        for d in cp["players"]:
+            p = g.players[d["id"]]
+            p.x, p.y, p.hp, p.alive, p.respawn_at, p.carrying_flag = d["x"], d["y"], d["hp"], d["alive"], d["respawnAt"], d["carryingFlag"]
+        for f, d in zip(g.flags, sorted(cp["flags"], key=lambda d: TEAMS.index(d["team"]))):
+            f.state, f.x, f.y, f.carrier_id = d["state"], d["x"], d["y"], d["carrierId"]
+            f.dropped_at = d["returnAt"] - FLAG_RETURN_MS if d["state"] == "DROPPED" else None
+            carrier = g.players.get(f.carrier_id) if f.carrier_id else None
+            if (f.state == "CARRIED") != bool(carrier and carrier.carrying_flag and carrier.team != f.team and carrier.alive):
+                raise ValueError(f"{TEAMS[f.team]} flag state {f.state} disagrees with carrier {f.carrier_id}")
+        if cp.get("winner"):
+            g.winner, g.capturer = TEAMS.index(cp["winner"]), cp.get("capturer")
+        return g
+
+    def snapshot(self, now: int, connected=frozenset(), bots=frozenset()) -> dict:
+        """connected: ids with a live socket. Others (dropped clients) stay in the match:
+        they keep their state, can be shot and hold flags, but send no input.
+        bots: display-only label; bots play through the same socket protocol as humans."""
         r = lambda v: round(v, 1)  # noqa: E731
         return {
             "t": "state",
@@ -248,11 +291,20 @@ class Game:
                     "respawnAt": p.respawn_at,
                     "carryingFlag": p.carrying_flag,
                     "connected": p.id in connected,
+                    "bot": p.id in bots,
                 }
                 for p in self.players.values()
             ],
             "flags": [
-                {"team": TEAMS[f.team], "x": r(f.x), "y": r(f.y), "state": f.state, "carrierId": f.carrier_id} for f in self.flags
+                {
+                    "team": TEAMS[f.team],
+                    "x": r(f.x),
+                    "y": r(f.y),
+                    "state": f.state,
+                    "carrierId": f.carrier_id,
+                    "returnAt": f.dropped_at + FLAG_RETURN_MS if f.state == "DROPPED" else None,
+                }
+                for f in self.flags
             ],
             "shots": [{"id": s.id, "team": TEAMS[s.team], "x": r(s.x), "y": r(s.y)} for s in self.shots],
         }
@@ -280,6 +332,28 @@ if __name__ == "__main__":  # self-check: python -m app.sim
     for n in (1, 2, 4):
         g = new(n)
         assert len(g.players) == 2 * n and all(p.alive and p.hp == HP for p in g.players.values())
+
+    # Checkpoint round-trip: mid-match state (carrier, dropped flag, dead player) survives.
+    g = new(2)
+    r0, b0, b1 = g.players["r0"], g.players["b0"], g.players["b1"]
+    r0.x, r0.y = BASES[1]
+    g.step(10)  # r0 carries blue flag
+    b1.x, b1.y = BASES[0]
+    g.step(20)  # b1 carries red flag
+    b1.hp = DAMAGE
+    g._damage(b1, 30)  # red flag dropped, b1 dead
+    cp = g.checkpoint(40)
+    h = Game.restore(cp, 5000)
+    assert h.checkpoint(40) == cp
+    assert h.flags[0].dropped_at == 30 and h.players["b1"].respawn_at == 30 + RESPAWN_MS and h.players["r0"].carrying_flag
+    h.step(5000)  # downtime elapsed: b1 respawns, dropped flag timer keeps running from the checkpoint clock
+    assert h.players["b1"].alive and h.flags[0].state == "DROPPED" and not h.ended
+    bad = dict(cp, players=[dict(p, carryingFlag=False) for p in cp["players"]])
+    try:
+        Game.restore(bad, 0)
+        raise AssertionError("inconsistent checkpoint accepted")
+    except ValueError:
+        pass
 
     # Movement is server-side and blocked by walls.
     g = new()

@@ -149,12 +149,30 @@ cd services/matchmaking-service && python -m app.services.packing   # → packin
   writes `result: {winner, capturer}` onto the match and logs `MATCH_ENDED`. "Return to hub" uses the
   existing `/matchmaking/matches/{id}/leave`, which completes the match.
 
-- Players without a live socket (demo bots, dropped clients) stay in the match as **placeholders**:
-  drawn faded with "(offline)", shootable, no input. There is no bot AI.
+- **Client** (`frontend/src/Game.tsx`, `src/game/`) renders ~100 ms behind the server and interpolates
+  between snapshots (no prediction: the server stays the only authority). Events such as flag stolen,
+  dropped, returned or captured, and eliminations, come from diffing snapshots. Sounds are synthesized
+  with WebAudio.
+- **Bots** (`scripts/bots.py` + `scripts/bot_ai.py`) enter the match and play over the same WebSocket
+  protocol, at ~10 Hz. They chase an enemy carrier, recover a dropped flag, attack or defend (one bot per
+  team guards the base), fight what they can see (reaction delay + aim noise), otherwise patrol. They use
+  grid BFS around walls and get no extra stats. A player with no live socket keeps their state and is shown "OFFLINE".
+- **Recovery:** every 3 s (and on clean shutdown) a small checkpoint goes to MongoDB `game_checkpoints`
+  (players, flags, timers, winner). On startup the service restores PLAYING checkpoints newer than 10 min
+  of `IN_PROGRESS` matches; clients and bots reconnect on their own. Anything else is logged and marked
+  `ABANDONED`, never invented.
 
-Full-stack check (stack up, bots stopped): `python scripts/ctf_e2e.py [1|2|4]` plays a real
-1v1, 2v2 and 4v4 (one socket per player): kill + respawn, carrier death drops the flag, own team
-recovers it, capture ends the match on every client. 1v1 and 2v2 need the queue's fill-off option.
+Full-stack checks (`pip install httpx websockets`):
+
+```bash
+python scripts/ctf_e2e.py 1 2 4          # bots stopped: real 1v1/2v2/4v4, one socket per player
+python scripts/ctf_e2e.py recovery       # restart game-service mid-match, state is restored
+CTF_CRASH=1 python scripts/ctf_e2e.py recovery   # same with SIGKILL (periodic checkpoint only)
+python scripts/ctf_e2e.py bots           # bots running: 1 human + 7 bots, restart mid-match
+python scripts/bot_ai.py                 # bots-only games against the real sim
+```
+
+1v1 and 2v2 need the queue's fill-off option.
 
 ## API overview
 
@@ -336,7 +354,8 @@ unique constraints are the backstop if application code ever forgets a check.
 ### Known limits (deliberate for this phase)
 
 - The launcher uses HTTP polling (1.5 s); only in-match gameplay uses a WebSocket.
-- Game rooms live in game-service memory: one replica, and a restart drops live matches.
+- Game rooms live in game-service memory (one replica). A restart resumes from the last checkpoint
+  (at most ~3 s old after a crash); shots in flight and held keys are not persisted.
 - One matchmaking replica: the matcher loop runs in-process. Claims are already
   conditional, but running several replicas would also need a leader lock.
 - No MMR, region or latency in matchmaking. The region label in the UI is cosmetic.
