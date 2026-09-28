@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { MatchDTO, MMStatus, QPlayer, QueueDTO, TeamDTO } from './api'
 import { MAX_PARTY, type Player } from './data'
+import { Game } from './Game'
 import { Avatar, Icon } from './ui'
 
 type Group = { label: string; players: QPlayer[]; mine?: boolean }
@@ -41,7 +42,7 @@ export function Matchmaking({
   onEnter: (matchId: string) => void
   onExit: (matchId: string) => void
 }) {
-  if (status.state === 'entered') return <Entered onExit={() => onExit(status.match.match_id)} />
+  if (status.state === 'entered') return <Game match={status.match} me={me} onExit={() => onExit(status.match.match_id)} />
   if (status.state === 'found') return <Found match={status.match} me={me} onReady={onReady} onEnter={onEnter} />
   return <Searching q={status.queue} me={me} onCancel={onCancel} />
 }
@@ -214,33 +215,6 @@ function Found({ match, me, onReady, onEnter }: { match: MatchDTO; me: Player; o
           Enter match
         </button>
       </div>
-    </section>
-  )
-}
-
-function Entered({ onExit }: { onExit: () => void }) {
-  const [loaded, setLoaded] = useState(false)
-  useEffect(() => {
-    const t = setTimeout(() => setLoaded(true), 1800)
-    return () => clearTimeout(t)
-  }, [])
-  return (
-    <section className="panel flex min-h-[calc(100vh-8rem)] flex-col items-center justify-center gap-4 p-8 text-center">
-      {loaded ? (
-        <>
-          <p className="label !text-gold">End of demo</p>
-          <h1 className="font-display text-3xl font-bold">Match server connected</h1>
-          <p className="max-w-md text-sm text-ink-400">Account → friends → party → queue → match. The in-match experience is outside this prototype.</p>
-          <button onClick={onExit} className="btn-ghost mt-2">
-            Return to hub
-          </button>
-        </>
-      ) : (
-        <>
-          <span className="size-8 animate-spin rounded-full border-2 border-ink-600 border-t-gold" />
-          <p className="font-display tracking-widest text-ink-300 uppercase">Connecting to match server…</p>
-        </>
-      )}
     </section>
   )
 }

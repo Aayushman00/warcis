@@ -1,4 +1,4 @@
 fastapi==0.115.*
 uvicorn[standard]==0.34.*
-httpx==0.28.*
-websockets==15.*
+pymongo==4.13.*
+pyjwt==2.10.*

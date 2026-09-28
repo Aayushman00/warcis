@@ -10,7 +10,8 @@ that use two different databases, **PostgreSQL** for relational social state and
 SIGN IN → HOME → FRIENDS → PARTY (1–4) → MATCHMAKING → MATCH FOUND → ENTER MATCH → end of demo
 ```
 
-Gameplay and combat are out of scope for this phase.
+Entering a match drops every player into a small **Capture The Flag** game (1v1, 2v2 or 4v4)
+served by an authoritative WebSocket game-service. See [Gameplay](#gameplay-capture-the-flag).
 
 ---
 
@@ -131,6 +132,25 @@ cd services/matchmaking-service && python -m app.services.packing   # → packin
 ```
 
 ---
+
+## Gameplay: Capture The Flag
+
+`services/game-service` runs the match. Rules live in `app/sim.py` (pure, self-checking:
+`cd services/game-service && python -m app.sim`), the WebSocket loop in `app/main.py`.
+
+- **Roster** comes from the match document: `teams[0]` is RED, `teams[1]` is BLUE. No new team logic.
+- **Connect:** `WS /api/game/ws/{match_id}?token=<JWT>` (nginx → gateway → game-service). The room
+  starts on the first connection; everyone spawns at their team's spawn points.
+- **Client → server (intents only):** `{"t":"input", up, down, left, right}` and `{"t":"fire", x, y}` (aim point).
+- **Server → clients at 30 Hz:** `{"t":"state", players, flags, shots, state, winner, elapsed}`.
+- Server decides movement, wall collision, projectiles (25 dmg, 500 ms cooldown), death, 3 s respawn,
+  flag pickup / drop on death / return by own team / auto-return after 10 s, and capture.
+- **Capture** only counts while your own flag is `AT_BASE`. The first capture ends the match: the server
+  writes `result: {winner, capturer}` onto the match and logs `MATCH_ENDED`. "Return to hub" uses the
+  existing `/matchmaking/matches/{id}/leave`, which completes the match.
+
+Full-stack check (stack up, bots stopped): `python scripts/ctf_e2e.py`. A 1v1 or 2v2 forms from
+parties queued with fill off.
 
 ## API overview
 
@@ -311,7 +331,8 @@ unique constraints are the backstop if application code ever forgets a check.
 
 ### Known limits (deliberate for this phase)
 
-- Real-time updates use HTTP polling (1.5 s). SSE or WebSockets belong with the future game service.
+- The launcher uses HTTP polling (1.5 s); only in-match gameplay uses a WebSocket.
+- Game rooms live in game-service memory: one replica, and a restart drops live matches.
 - One matchmaking replica: the matcher loop runs in-process. Claims are already
   conditional, but running several replicas would also need a leader lock.
 - No MMR, region or latency in matchmaking. The region label in the UI is cosmetic.
