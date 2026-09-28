@@ -10,6 +10,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from warcis_common.errors import ApiError
+from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
 from app.db.mongo import events, matches, queue
@@ -122,6 +123,9 @@ async def status(user_id: str) -> dict:
         return {"state": "idle", "notice": "Match cancelled: not every player readied up." if recent else None}
 
     waiting = await queue.find({"status": "WAITING", "mode": entry["mode"]}).to_list(None)
+    # The matcher may claim our entry between the two reads above. Keep it in the pool so the
+    # preview still finds our team (the next poll sees the match) instead of raising StopIteration.
+    waiting = [e for e in waiting if e["queue_id"] != entry["queue_id"]] + [entry]
     team = next(t for t in pack(waiting) if any(e["queue_id"] == entry["queue_id"] for e in t))
     # Show our own party first, then the parties we'd currently be grouped with.
     team = [entry] + [e for e in fifo(team) if e["queue_id"] != entry["queue_id"]]
@@ -172,12 +176,18 @@ async def enter(match_id: str, user_id: str) -> dict:
 
 async def leave(match_id: str, user_id: str) -> None:
     """End-of-demo 'Return to hub'. Match completes once everyone has left."""
-    m = await _own_match(match_id, user_id)
-    await matches.update_one({"match_id": match_id}, {"$addToSet": {"left": user_id}})
+    # Add and read back in one atomic step: every concurrent leaver sees all earlier leaves, so
+    # the last one always completes the match (a separate read here left matches IN_PROGRESS).
+    m = await matches.find_one_and_update(
+        {"match_id": match_id, "player_ids": user_id}, {"$addToSet": {"left": user_id}}, return_document=ReturnDocument.AFTER
+    )
+    if not m:
+        raise ApiError(404, "MATCH_NOT_FOUND", "Match not found.")
     await log(match_id, "PLAYER_LEFT", user_id)
-    if set(m["player_ids"]) <= set(m.get("left", [])) | {user_id}:
-        await matches.update_one({"match_id": match_id}, {"$set": {"status": "COMPLETED", "ended_at": now()}})
-        await log(match_id, "MATCH_COMPLETED")
+    if set(m["player_ids"]) <= set(m["left"]):
+        done = await matches.update_one({"match_id": match_id, "status": {"$ne": "COMPLETED"}}, {"$set": {"status": "COMPLETED", "ended_at": now()}})
+        if done.modified_count:  # exactly one of the racing leavers logs it
+            await log(match_id, "MATCH_COMPLETED")
 
 
 # ─────────────── matcher ───────────────

@@ -27,7 +27,6 @@ SIZES = [int(s) for s in os.environ.get("BOT_PARTIES", "2,1,3,1").split(",") if 
 NAMES = ["Nocturne", "Rook", "Zephyr", "Calyx", "Ironwren", "Pax", "Dusk", "Morrow", "Kestrel", "Nimbus",
          "Tallis", "Orrin", "Vex", "Saltmoth", "Juno", "Brask"]
 WS_URL = API.replace("http", "ws", 1) + "/game/ws"
-_leave_lock = threading.Lock()  # matchmaking's leave() races when many players leave at once
 RECONNECT_FOR_S = 90  # keep retrying a lost game connection this long (covers a game-service restart)
 assert sum(SIZES) <= len(NAMES) and all(1 <= s <= 4 for s in SIZES), "BOT_PARTIES: sizes 1-4, at most 16 bots"
 
@@ -139,8 +138,7 @@ def play_match(token: str, name: str, match_id: str) -> None:
                 print(f"[bots] {name} gave up on {match_id[:8]}: {e!r}", flush=True)
                 break
             time.sleep(1)
-    with _leave_lock:
-        quiet(Client(token).call, "POST", f"/matchmaking/matches/{match_id}/leave")
+    quiet(Client(token).call, "POST", f"/matchmaking/matches/{match_id}/leave")
 
 
 if __name__ == "__main__":
