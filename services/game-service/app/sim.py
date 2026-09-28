@@ -53,6 +53,7 @@ class Player:
     carrying_flag: bool = False
     keys: dict = field(default_factory=lambda: {"up": False, "down": False, "left": False, "right": False})
     last_fire: int = -FIRE_COOLDOWN_MS
+    killed_by: str | None = None  # display only: who landed the last hit, while dead
 
 
 @dataclass
@@ -114,7 +115,7 @@ class Game:
         if slot is None:
             slot = [q.id for q in self.players.values() if q.team == p.team].index(p.id)
         p.x, p.y = SPAWNS[p.team][slot % len(SPAWNS[p.team])]
-        p.hp, p.alive, p.respawn_at, p.carrying_flag = HP, True, None, False
+        p.hp, p.alive, p.respawn_at, p.carrying_flag, p.killed_by = HP, True, None, False, None
 
     @property
     def ended(self) -> bool:
@@ -182,17 +183,17 @@ class Game:
                 None,
             )
             if victim:
-                self._damage(victim, now)
+                self._damage(victim, now, s.owner)
             elif not _hits_wall(nx, ny, SHOT_R) and now - s.born < SHOT_TTL_MS:
                 s.x, s.y = nx, ny
                 live.append(s)
         self.shots = live
 
-    def _damage(self, p: Player, now: int) -> None:
+    def _damage(self, p: Player, now: int, by: str | None = None) -> None:
         p.hp -= DAMAGE
         if p.hp > 0:
             return
-        p.hp, p.alive, p.respawn_at = 0, False, now + RESPAWN_MS
+        p.hp, p.alive, p.respawn_at, p.killed_by = 0, False, now + RESPAWN_MS, by
         if p.carrying_flag:
             f = self.flags[1 - p.team]
             f.state, f.carrier_id, f.x, f.y, f.dropped_at = "DROPPED", None, p.x, p.y, now
@@ -292,6 +293,7 @@ class Game:
                     "carryingFlag": p.carrying_flag,
                     "connected": p.id in connected,
                     "bot": p.id in bots,
+                    "killedBy": p.killed_by,
                 }
                 for p in self.players.values()
             ],
@@ -306,7 +308,7 @@ class Game:
                 }
                 for f in self.flags
             ],
-            "shots": [{"id": s.id, "team": TEAMS[s.team], "x": r(s.x), "y": r(s.y)} for s in self.shots],
+            "shots": [{"id": s.id, "owner": s.owner, "team": TEAMS[s.team], "x": r(s.x), "y": r(s.y)} for s in self.shots],
         }
 
 
@@ -315,6 +317,7 @@ MAP = {
     "h": H,
     "walls": WALLS,
     "bases": [{"team": TEAMS[t], "x": x, "y": y, "r": BASE_R} for t, (x, y) in enumerate(BASES)],
+    "spawns": [{"team": TEAMS[t], "x": x, "y": y} for t in (0, 1) for x, y in SPAWNS[t]],
     "playerR": PLAYER_R,
     "shotR": SHOT_R,
 }
@@ -378,11 +381,12 @@ if __name__ == "__main__":  # self-check: python -m app.sim
         for k in range(1, 11):
             g.step(t + 20 * k)
     assert b0.hp == 0 and not b0.alive and b0.respawn_at is not None
+    assert g.snapshot(t)["players"][1]["killedBy"] == "r0"  # kill feed attribution comes from the server
     assert r0.alive and r0.hp == HP
     g.fire("b0", r0.x, r0.y, t + 1000)  # dead cannot shoot
     assert not g.shots
     g.step(b0.respawn_at)
-    assert b0.alive and b0.hp == HP and (b0.x, b0.y) == SPAWNS[1][0]
+    assert b0.alive and b0.hp == HP and b0.killed_by is None and (b0.x, b0.y) == SPAWNS[1][0]
 
     # Pickup: own flag cannot be picked up; enemy flag can.
     g = new()

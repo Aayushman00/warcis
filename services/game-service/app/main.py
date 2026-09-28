@@ -218,6 +218,9 @@ async def play(ws: WebSocket, match_id: str, token: str = "", bot: int = 0):
     if bot:
         room.bots.add(me.id)
     g = room.game
+    # Current state right away: a finished room no longer ticks, and a late joiner (or a
+    # reconnect) should see the result / the arena without waiting for the next broadcast.
+    await _send(ws, g.snapshot(now_ms(), room.sockets.keys(), room.bots))
     try:
         while True:
             msg = await ws.receive_json()

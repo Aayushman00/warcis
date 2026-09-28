@@ -71,6 +71,12 @@ export const sfx = {
   pickup() {
     ;[523, 659, 784].forEach((f, i) => tone(f, 0.09, { type: 'triangle', vol: 0.08, delay: i * 0.07 }))
   },
+  flagDrop() {
+    tone(392, 0.12, { type: 'triangle', vol: 0.07, to: 262 })
+  },
+  countdown(go: boolean) {
+    tone(go ? 988 : 587, go ? 0.3 : 0.1, { type: 'square', vol: go ? 0.06 : 0.045 })
+  },
   flagReturn() {
     tone(784, 0.1, { type: 'sine', vol: 0.09 })
     tone(523, 0.16, { type: 'sine', vol: 0.09, delay: 0.1 })
