@@ -226,7 +226,9 @@ class Game:
 
     # ─────────────── broadcast ───────────────
 
-    def snapshot(self, now: int) -> dict:
+    def snapshot(self, now: int, connected=frozenset()) -> dict:
+        """connected: ids with a live socket. Others (bots, dropped clients) stay in the
+        match as placeholders: they spawn, can be shot and hold flags, but send no input."""
         r = lambda v: round(v, 1)  # noqa: E731
         return {
             "t": "state",
@@ -245,6 +247,7 @@ class Game:
                     "alive": p.alive,
                     "respawnAt": p.respawn_at,
                     "carryingFlag": p.carrying_flag,
+                    "connected": p.id in connected,
                 }
                 for p in self.players.values()
             ],
@@ -357,6 +360,7 @@ if __name__ == "__main__":  # self-check: python -m app.sim
     r2.x, r2.y = BASES[0]
     g.step(60)
     assert g.ended and TEAMS[g.winner] == "RED" and g.snapshot(60)["winner"] == "RED"
+    assert [p["connected"] for p in g.snapshot(60, {"r0"})["players"]] == [True, False]
 
     # After the end nothing moves or fires.
     g.set_keys("r0", {"up": True})

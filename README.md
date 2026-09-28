@@ -149,8 +149,12 @@ cd services/matchmaking-service && python -m app.services.packing   # → packin
   writes `result: {winner, capturer}` onto the match and logs `MATCH_ENDED`. "Return to hub" uses the
   existing `/matchmaking/matches/{id}/leave`, which completes the match.
 
-Full-stack check (stack up, bots stopped): `python scripts/ctf_e2e.py`. A 1v1 or 2v2 forms from
-parties queued with fill off.
+- Players without a live socket (demo bots, dropped clients) stay in the match as **placeholders**:
+  drawn faded with "(offline)", shootable, no input. There is no bot AI.
+
+Full-stack check (stack up, bots stopped): `python scripts/ctf_e2e.py [1|2|4]` plays a real
+1v1, 2v2 and 4v4 (one socket per player): kill + respawn, carrier death drops the flag, own team
+recovers it, capture ends the match on every client. 1v1 and 2v2 need the queue's fill-off option.
 
 ## API overview
 

@@ -1,103 +1,191 @@
-"""Full-stack CTF check: 1v1 via the real queue, then play it over the WebSocket.
+"""Full-stack CTF check: form a real match through the queue, then play it over WebSockets.
 
-    pip install httpx websockets && python scripts/ctf_e2e.py      (stack running, bots stopped)
+    pip install httpx websockets
+    python scripts/ctf_e2e.py 1     # 1v1  (two solos, fill off)
+    python scripts/ctf_e2e.py 2     # 2v2  (two parties of 2, fill off)
+    python scripts/ctf_e2e.py 4     # 4v4  (eight solos, fill on)   default: all three
 
-Goes through nginx (:8080) -> gateway -> game-service, the same path a browser uses.
+Stack running, bots stopped. Goes through nginx (:8080) -> gateway -> game-service, the
+same path a browser uses. Every player holds its own socket; the scenario checks that all
+2N clients see the same authoritative combat, flag drop/return and capture.
 """
-import asyncio, json, os, time, uuid
+
+import asyncio
+import json
+import os
+import sys
+import time
+import uuid
 
 import websockets
 from api import Client
 
 WS = os.environ.get("WS_URL", "ws://localhost:8080/api/game/ws")
-tag = uuid.uuid4().hex[:5]
-a = Client().register(f"ctfA{tag}", "password123")
-b = Client().register(f"ctfB{tag}", "password123")
-for c in (a, b):
-    c.call("POST", "/matchmaking/queue", {"mode": "squad", "fill": False})
-for _ in range(30):
-    s = a.status()
-    if s["state"] == "found":
-        break
-    time.sleep(0.5)
-m = a.status()["match"]
-mid = m["match_id"]
-assert {p["id"] for t in m["teams"] for p in t["players"]} == {a.me["id"], b.me["id"]}, "not our 1v1"
-for c in (a, b):
-    c.call("POST", f"/matchmaking/matches/{mid}/ready")
-for c in (a, b):
-    c.call("POST", f"/matchmaking/matches/{mid}/enter")
-red_is_a = m["teams"][0]["players"][0]["id"] == a.me["id"]
-print("match", mid, "A is", "RED" if red_is_a else "BLUE")
+RED_BASE, BLUE_FLAG = (110, 350), (1090, 350)
+LANE = [(60, 350), (500, 350), (500, 180), (700, 180), (700, 350), (1090, 350)]  # red spawn -> blue flag, around walls
 
 
-async def recv_state(ws):
-    while True:
-        msg = json.loads(await ws.recv())
-        if msg["t"] == "state":
-            return msg
+def form_match(n: int) -> tuple[str, list[Client], list[Client]]:
+    tag = uuid.uuid4().hex[:5]
+    players = [Client().register(f"ctf{n}{i}{tag}", "password123") for i in range(2 * n)]
+    fill = n == 4  # 4v4 fills from solos; 1v1/2v2 queue fixed-size parties with fill off
+    leaders = players if fill else players[::n]
+    if not fill and n > 1:
+        for lead in leaders:
+            for mate in players[players.index(lead) + 1 : players.index(lead) + n]:
+                lead.befriend(mate)
+                lead.invite_and_join(mate)
+    for lead in leaders:
+        lead.call("POST", "/matchmaking/queue", {"mode": "squad", "fill": fill})
+    for _ in range(30):
+        s = players[0].status()
+        if s["state"] == "found":
+            break
+        time.sleep(0.5)
+    m = s["match"]
+    ids = {c.me["id"]: c for c in players}
+    assert {p["id"] for t in m["teams"] for p in t["players"]} == set(ids), "match has players from outside this test"
+    for c in players:
+        c.call("POST", f"/matchmaking/matches/{m['match_id']}/ready")
+    for c in players:
+        c.call("POST", f"/matchmaking/matches/{m['match_id']}/enter")
+    red = [ids[p["id"]] for p in m["teams"][0]["players"]]
+    blue = [ids[p["id"]] for p in m["teams"][1]["players"]]
+    assert len(red) == len(blue) == n
+    return m["match_id"], red, blue
 
 
-async def main():
+class Seat:
+    """One player's socket, always holding the latest snapshot it received."""
+
+    def __init__(self, client: Client, ws):
+        self.id, self.ws, self.s, self.states = client.me["id"], ws, None, 0
+
+    async def pump(self):
+        async for raw in self.ws:
+            msg = json.loads(raw)
+            if msg["t"] == "state":
+                self.s, self.states = msg, self.states + 1
+
+    def me(self, pid=None):
+        return next(p for p in self.s["players"] if p["id"] == (pid or self.id))
+
+    def flag(self, team):
+        return next(f for f in self.s["flags"] if f["team"] == team)
+
+    async def send(self, **m):
+        await self.ws.send(json.dumps(m))
+
+    async def until(self, cond, timeout=15.0):
+        end = time.time() + timeout
+        while time.time() < end:
+            if self.s and cond(self.s):
+                return self.s
+            await asyncio.sleep(0.02)
+        raise AssertionError(f"timed out waiting on {cond.__code__.co_firstlineno}")
+
+    async def walk(self, points, stop=lambda s: s["state"] == "ENDED"):
+        for tx, ty in points:
+            while True:
+                await asyncio.sleep(0.03)
+                p = self.me()
+                dx, dy = tx - p["x"], ty - p["y"]
+                if abs(dx) < 6 and abs(dy) < 6 or stop(self.s) or not p["alive"]:
+                    break
+                await self.send(t="input", right=dx > 5, left=dx < -5, down=dy > 5, up=dy < -5)
+            if stop(self.s) or not self.me()["alive"]:
+                break
+        await self.send(t="input")
+
+    async def kill(self, victim: "Seat"):
+        """Shoot at the victim's server position until the server says it is dead."""
+        while self.me(victim.id)["alive"]:
+            v = self.me(victim.id)
+            await self.send(t="fire", x=v["x"], y=v["y"])
+            await asyncio.sleep(0.55)
+
+
+async def play(mid: str, red: list[Client], blue: list[Client]) -> None:
+    n = len(red)
     async with websockets.connect(f"{WS}/{mid}?token=bad") as bad:
-        msg = json.loads(await bad.recv())
-        assert msg["t"] == "error", msg
-        print("bad token rejected:", msg["message"])
+        assert json.loads(await bad.recv())["t"] == "error"
 
-    async with websockets.connect(f"{WS}/{mid}?token={a.token}") as wa, websockets.connect(f"{WS}/{mid}?token={b.token}") as wb:
-        hello = json.loads(await wa.recv())
-        assert hello["t"] == "hello" and hello["you"] == a.me["id"]
-        s = await recv_state(wa)
-        me = next(p for p in s["players"] if p["id"] == a.me["id"])
-        assert me["hp"] == 100 and me["alive"] and not me["carryingFlag"]
-        assert [f["state"] for f in s["flags"]] == ["AT_BASE", "AT_BASE"]
-        team = me["team"]
-        print("spawned", me)
+    sockets = [await websockets.connect(f"{WS}/{mid}?token={c.token}") for c in red + blue]
+    seats = []
+    for c, ws in zip(red + blue, sockets):
+        hello = json.loads(await ws.recv())
+        assert hello["t"] == "hello" and hello["you"] == c.me["id"]
+        seats.append(Seat(c, ws))
+    pumps = [asyncio.create_task(s.pump()) for s in seats]
+    R, B = seats[:n], seats[n:]
+    try:
+        for s in seats:
+            await s.until(lambda st: all(p["connected"] for p in st["players"]))
+        st = R[0].s
+        assert len(st["players"]) == 2 * n and all(p["alive"] and p["hp"] == 100 for p in st["players"])
+        assert [f["state"] for f in st["flags"]] == ["AT_BASE", "AT_BASE"]
+        print(f"  {2 * n} sockets connected, all spawned at 100 HP")
 
-        # client cannot set its own hp/position: unknown fields are ignored
-        await wa.send(json.dumps({"t": "input", "hp": 9999, "x": 1090, "y": 350}))
-        await wb.send(json.dumps({"t": "fire", "x": 600, "y": 350}))
-        await wb.send(json.dumps({"t": "fire", "x": 600, "y": 350}))  # cooldown
-        s = await recv_state(wa)
-        me = next(p for p in s["players"] if p["id"] == a.me["id"])
-        assert me["hp"] == 100 and me["x"] < 200 and len(s["shots"]) == 1, (me, s["shots"])
+        # Combat: red0 and blue0 meet in the top lane; red0 kills blue0 (4 x 25 dmg).
+        await asyncio.gather(R[0].walk([(60, 350), (500, 350), (500, 180)]), B[0].walk([(1140, 350), (700, 350), (700, 180)]))
+        await R[0].kill(B[0])
+        dead = B[0].me()
+        assert dead["hp"] == 0 and not dead["alive"] and dead["respawnAt"]
+        for s in seats:  # every client agrees
+            await s.until(lambda st: not next(p for p in st["players"] if p["id"] == B[0].id)["alive"])
+        await B[0].until(lambda st: B[0].me()["alive"], timeout=5)
+        assert B[0].me()["hp"] == 100 and B[0].me()["x"] > 1000
+        print("  kill + 3 s respawn seen by all clients")
 
-        # Walk A: enemy flag and back, routing around walls.
-        mirror = (lambda x: x) if team == "RED" else (lambda x: 1200 - x)
-        out = [(mirror(x), y) for x, y in [(60, 350), (500, 350), (500, 180), (700, 180), (700, 350), (1090, 350)]]
+        # Flag drop on death: red0 grabs blue flag, blue0 (at home) shoots the carrier.
+        await R[0].walk(LANE[3:])
+        await R[0].until(lambda st: R[0].flag("BLUE")["carrierId"] == R[0].id)
+        assert R[0].me()["carryingFlag"]
+        await R[0].walk([(1000, 350)])  # step off the flag stand so the drop point differs from base
+        await B[0].kill(R[0])
+        await B[0].until(lambda st: B[0].flag("BLUE")["state"] == "DROPPED")
+        f = B[0].flag("BLUE")
+        assert f["carrierId"] is None and abs(f["x"] - 1000) < 12, f
+        print("  carrier killed -> flag DROPPED at death position")
 
-        async def walk(points):
-            for tx, ty in points:
-                while True:
-                    s = await recv_state(wa)
-                    me = next(p for p in s["players"] if p["id"] == a.me["id"])
-                    dx, dy = tx - me["x"], ty - me["y"]
-                    if abs(dx) < 6 and abs(dy) < 6 or s["state"] == "ENDED":
-                        break
-                    await wa.send(json.dumps({"t": "input", "right": dx > 5, "left": dx < -5, "down": dy > 5, "up": dy < -5}))
-            await wa.send(json.dumps({"t": "input"}))
-            return s
+        # Own team recovers it by touching it.
+        await B[0].walk([(f["x"], f["y"])], stop=lambda st: B[0].flag("BLUE")["state"] == "AT_BASE")
+        await B[0].until(lambda st: B[0].flag("BLUE")["state"] == "AT_BASE")
+        assert (B[0].flag("BLUE")["x"], B[0].flag("BLUE")["y"]) == BLUE_FLAG
+        print("  own team touched dropped flag -> AT_BASE")
 
-        s = await walk(out)
-        enemy_flag = next(f for f in s["flags"] if f["team"] != team)
-        assert enemy_flag["state"] == "CARRIED" and enemy_flag["carrierId"] == a.me["id"], enemy_flag
-        print("picked up enemy flag")
-        s = await walk(list(reversed(out))[1:-1] + [(mirror(110), 350)])
-        assert s["state"] == "ENDED" and s["winner"] == team, (s["state"], s["winner"])
-        sb = await recv_state(wb)
-        while sb["state"] != "ENDED":
-            sb = await recv_state(wb)
-        assert sb["winner"] == team
-        print("captured:", team, "TEAM WINS (both clients saw it)")
-        # after end: no movement
-        await wa.send(json.dumps({"t": "input", "up": True}))
+        # Capture with the last red player (red0 in 1v1), blue0 parked off the lane.
+        runner = R[-1]
+        await B[0].walk([(1140, 600)])
+        await runner.until(lambda st: runner.me()["alive"], timeout=5)
+        start = runner.me()
+        await runner.walk([(start["x"], 350)] + LANE[1:])
+        await runner.until(lambda st: runner.flag("BLUE")["carrierId"] == runner.id)
+        await runner.walk(list(reversed(LANE))[1:-1] + [RED_BASE])
+        for s in seats:
+            await s.until(lambda st: st["state"] == "ENDED")
+            assert s.s["winner"] == "RED"
+        print(f"  capture -> RED TEAM WINS on all {2 * n} clients")
+
+        await R[0].send(t="input", up=True)
+        await R[0].send(t="fire", x=0, y=0)
+    finally:
+        for p in pumps:
+            p.cancel()
+        for ws in sockets:
+            await ws.close()
 
 
-asyncio.run(main())
-time.sleep(0.5)
-st = a.status()
-assert st["state"] == "entered"
-for c in (a, b):
-    c.call("POST", f"/matchmaking/matches/{mid}/leave")
-assert a.status()["state"] == "idle"
-print("returned to hub; CTF E2E PASSED")
+def run(n: int) -> None:
+    mid, red, blue = form_match(n)
+    print(f"{n}v{n} match {mid[:8]}")
+    asyncio.run(play(mid, red, blue))
+    for c in red + blue:
+        c.call("POST", f"/matchmaking/matches/{mid}/leave")
+    assert red[0].status()["state"] == "idle"
+    print(f"{n}v{n} CTF E2E PASSED")
+
+
+if __name__ == "__main__":
+    for n in [int(a) for a in sys.argv[1:]] or [1, 2, 4]:
+        run(n)

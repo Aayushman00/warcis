@@ -5,7 +5,7 @@ import type { Player } from './data'
 /* Server messages (services/game-service). The server is authoritative; this file only
    sends intents (held keys, aim point) and draws whatever state it is told. */
 type Team = 'RED' | 'BLUE'
-type GPlayer = { id: string; name: string; team: Team; x: number; y: number; hp: number; alive: boolean; respawnAt: number | null; carryingFlag: boolean }
+type GPlayer = { id: string; name: string; team: Team; x: number; y: number; hp: number; alive: boolean; respawnAt: number | null; carryingFlag: boolean; connected: boolean }
 type GFlag = { team: Team; x: number; y: number; state: 'AT_BASE' | 'CARRIED' | 'DROPPED'; carrierId: string | null }
 type Snapshot = {
   t: 'state'
@@ -153,6 +153,7 @@ export function Game({ match, me, onExit }: { match: MatchDTO; me: Player; onExi
       ctx.font = '12px Inter, sans-serif'
       for (const p of s.players) {
         if (!p.alive) continue
+        ctx.globalAlpha = p.connected ? 1 : 0.35 // never connected (bot) or dropped: placeholder, no input
         ctx.fillStyle = COLOR[p.team]
         ctx.beginPath()
         ctx.arc(p.x, p.y, map.playerR, 0, Math.PI * 2)
@@ -167,7 +168,8 @@ export function Game({ match, me, onExit }: { match: MatchDTO; me: Player; onExi
         ctx.fillStyle = '#3ddc84'
         ctx.fillRect(p.x - 16, p.y - map.playerR - 10, (32 * p.hp) / 100, 4)
         ctx.fillStyle = '#e6e9f2'
-        ctx.fillText(p.name, p.x, p.y + map.playerR + 14)
+        ctx.fillText(p.connected ? p.name : `${p.name} (offline)`, p.x, p.y + map.playerR + 14)
+        ctx.globalAlpha = 1
         if (p.carryingFlag) drawFlag(ctx, p.x + 10, p.y - 8, p.team === 'RED' ? 'BLUE' : 'RED', false)
       }
       for (const b of s.shots) {

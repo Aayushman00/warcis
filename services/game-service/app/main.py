@@ -82,7 +82,7 @@ async def run(room: Room) -> None:
         while True:
             t = now_ms()
             g.step(t)
-            snap = g.snapshot(t)
+            snap = g.snapshot(t, room.sockets.keys())
             await asyncio.gather(*(_send(ws, snap) for ws in list(room.sockets.values())))
             if g.ended:
                 await _record_result(room)
