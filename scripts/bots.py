@@ -4,9 +4,9 @@
     BOT_PARTIES=2,1,3,1 python scripts/bots.py      (from the host)
 
 Each entry in BOT_PARTIES is one party (size 1-4). Bots befriend their leader, join the
-party, queue for Squad, ready up on MATCH FOUND, enter the match and play Capture The
-Flag over the same WebSocket protocol as the browser (brain: bot_ai.py). When the game
-ends they return to the hub and queue again. 2+1+3+1 = 7 bots: one human is enough to
+party and idle until a human has searched alone for 15-20 s (JOIN_DELAY_S), then queue for
+Squad, ready up instantly on MATCH FOUND and play Capture The Flag over the same WebSocket protocol as the browser (brain: bot_ai.py). When the game
+ends they return to the hub; they leave the queue if the human stops searching. 2+1+3+1 = 7 bots: one human is enough to
 complete a 4v4. If the game-service restarts mid-match, each bot reconnects on its own.
 """
 
@@ -27,7 +27,7 @@ SIZES = [int(s) for s in os.environ.get("BOT_PARTIES", "2,1,3,1").split(",") if 
 NAMES = ["Nocturne", "Rook", "Zephyr", "Calyx", "Ironwren", "Pax", "Dusk", "Morrow", "Kestrel", "Nimbus",
          "Tallis", "Orrin", "Vex", "Saltmoth", "Juno", "Brask"]
 WS_URL = API.replace("http", "ws", 1) + "/game/ws"
-READY_DELAY_S = (15.0, 20.0)  # must stay under the server's READY_TIMEOUT_S (45)
+JOIN_DELAY_S = (15.0, 20.0)  # how long a human searches alone before the bots queue up for them
 RECONNECT_FOR_S = 90  # keep retrying a lost game connection this long (covers a game-service restart)
 assert sum(SIZES) <= len(NAMES) and all(1 <= s <= 4 for s in SIZES), "BOT_PARTIES: sizes 1-4, at most 16 bots"
 
@@ -70,9 +70,21 @@ def main() -> None:
             time.sleep(3)
 
     sessions: dict[str, threading.Thread] = {}  # bot id -> thread playing its current match
-    ready_at: dict[tuple[str, str], float] = {}  # (bot id, match id) -> when this bot accepts
+    bot_ids = {b.me["id"] for g in groups for b in g}
+    join_at: dict[tuple[str, str], float] = {}  # (human party id, joined_at) -> when the bots come
     done: set[tuple[str, str]] = set()  # (bot id, match id) already played and left
     while True:
+        waiting = quiet(groups[0][0].call, "GET", "/matchmaking/queue/waiting")
+        if isinstance(waiting, ApiFail):
+            time.sleep(1.5)
+            continue
+        humans = {(e["party_id"], e["joined_at"]) for e in waiting if not set(e["player_ids"]) & bot_ids}
+        now = time.monotonic()
+        for k in humans:  # independent random 15-20 s wait per searching human party
+            join_at.setdefault(k, now + random.uniform(*JOIN_DELAY_S))
+        for k in set(join_at) - humans:
+            del join_at[k]
+        summon = any(now >= t for t in join_at.values())
         for g in groups:
             for b in g:
                 quiet(b.call, "POST", "/users/me/heartbeat")
@@ -80,7 +92,9 @@ def main() -> None:
             s = quiet(leader.status)
             if isinstance(s, ApiFail):
                 continue
-            if s["state"] == "idle":
+            if s["state"] == "searching" and not humans:  # the human gave up: don't fight other bots
+                quiet(leader.call, "DELETE", "/matchmaking/queue")
+            elif s["state"] == "idle" and summon:
                 form(g)
                 r = quiet(leader.call, "POST", "/matchmaking/queue", {"mode": "squad"})
                 if isinstance(r, ApiFail):
@@ -89,12 +103,7 @@ def main() -> None:
                 m = s["match"]
                 mid = m["match_id"]
                 for b in g:
-                    bid = b.me["id"]
-                    if bid in m["ready"]:
-                        continue
-                    # Independent 15-20 s accept delay per bot: real players get to join and ready first.
-                    due = ready_at.setdefault((bid, mid), time.monotonic() + random.uniform(*READY_DELAY_S))
-                    if time.monotonic() >= due:
+                    if b.me["id"] not in m["ready"]:  # bots accept instantly
                         quiet(b.call, "POST", f"/matchmaking/matches/{mid}/ready")
                 if s["state"] != "entered":  # the server starts the match after its countdown
                     continue

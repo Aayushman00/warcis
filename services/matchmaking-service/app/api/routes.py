@@ -18,6 +18,11 @@ async def leave_queue(me: CurrentUser = Depends(current_user)):
     return Response(status_code=204)
 
 
+@router.get("/queue/waiting")
+async def waiting(me: CurrentUser = Depends(current_user)):
+    return await queue.waiting()
+
+
 @router.get("/status")
 async def get_status(me: CurrentUser = Depends(current_user)):
     return await queue.status(me.id)
