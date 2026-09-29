@@ -28,11 +28,6 @@ async def ready(match_id: str, me: CurrentUser = Depends(current_user)):
     return await queue.ready(match_id, me.id)
 
 
-@router.post("/matches/{match_id}/enter")
-async def enter(match_id: str, me: CurrentUser = Depends(current_user)):
-    return await queue.enter(match_id, me.id)
-
-
 @router.post("/matches/{match_id}/leave", status_code=204)
 async def leave(match_id: str, me: CurrentUser = Depends(current_user)):
     await queue.leave(match_id, me.id)

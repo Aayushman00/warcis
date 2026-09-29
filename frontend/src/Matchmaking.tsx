@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { MatchDTO, MMStatus, QPlayer, QueueDTO, TeamDTO } from './api'
 import { MAX_PARTY, type Player } from './data'
 import { Game } from './Game'
@@ -32,18 +32,16 @@ export function Matchmaking({
   me,
   onCancel,
   onReady,
-  onEnter,
   onExit,
 }: {
   status: Exclude<MMStatus, { state: 'idle' }>
   me: Player
   onCancel: () => void
   onReady: (matchId: string) => void
-  onEnter: (matchId: string) => void
   onExit: (matchId: string) => void
 }) {
   if (status.state === 'entered') return <Game match={status.match} me={me} onExit={() => onExit(status.match.match_id)} />
-  if (status.state === 'found') return <Found match={status.match} me={me} onReady={onReady} onEnter={onEnter} />
+  if (status.state === 'found' || status.state === 'countdown') return <Found match={status.match} me={me} onReady={onReady} onLeave={onExit} />
   return <Searching q={status.queue} me={me} onCancel={onCancel} />
 }
 
@@ -145,6 +143,11 @@ function GroupBox({ g, side, readyIds, big }: { g: Group; side: 'ally' | 'foe'; 
               )}
             </div>
             <span className="w-full truncate text-center text-xs font-semibold">{p.name}</span>
+            {readyIds && (
+              <span className={`font-display text-[10px] font-bold tracking-widest ${readyIds.has(p.id) ? 'text-online' : 'text-ink-400'}`}>
+                {readyIds.has(p.id) ? 'READY ✓' : 'WAITING'}
+              </span>
+            )}
           </div>
         ))}
       </div>
@@ -152,14 +155,16 @@ function GroupBox({ g, side, readyIds, big }: { g: Group; side: 'ally' | 'foe'; 
   )
 }
 
-function Found({ match, me, onReady, onEnter }: { match: MatchDTO; me: Player; onReady: (id: string) => void; onEnter: (id: string) => void }) {
-  // Seeing MATCH FOUND counts as accepting: send our ready once per match.
-  const sent = useRef<string | null>(null)
+function Found({ match, me, onReady, onLeave }: { match: MatchDTO; me: Player; onReady: (id: string) => void; onLeave: (id: string) => void }) {
+  // Readiness is explicit: nothing is sent until the player clicks READY. The server drives the countdown.
+  const [now, setNow] = useState(() => Date.now())
+  const counting = match.status === 'COUNTDOWN' && !!match.countdown_ends_at
   useEffect(() => {
-    if (sent.current === match.match_id || match.ready.includes(me.id)) return
-    sent.current = match.match_id
-    onReady(match.match_id)
-  }, [match.match_id, match.ready, me.id, onReady])
+    if (!counting) return
+    const t = setInterval(() => setNow(Date.now()), 100)
+    return () => clearInterval(t)
+  }, [counting])
+  const left = counting ? Math.max(0, Math.ceil((Date.parse(match.countdown_ends_at!) - now) / 1000)) : 0
 
   const letters = { next: 0 }
   const ours = groupsOf(match.teams[match.my_team], me.id, letters)
@@ -168,6 +173,7 @@ function Found({ match, me, onReady, onEnter }: { match: MatchDTO; me: Player; o
   const total = match.teams.reduce((n, t) => n + t.players.length, 0)
   const ready = readyIds.size
   const allReady = ready >= total
+  const iAmReady = readyIds.has(me.id)
 
   const team = (side: 'ally' | 'foe', groups: Group[]) => (
     <div className={`flex-1 ${side === 'foe' ? 'lg:text-right' : ''}`}>
@@ -205,15 +211,34 @@ function Found({ match, me, onReady, onEnter }: { match: MatchDTO; me: Player; o
       </div>
 
       <div className="relative mt-12 flex flex-col items-center gap-3">
-        <p className="text-sm text-ink-300">
-          {allReady ? 'All players ready' : 'Waiting for players…'} <b className="ml-1 tabular-nums">{Math.min(ready, total)} / {total}</b>
-        </p>
-        <div className="h-1 w-64 overflow-hidden rounded bg-white/5">
-          <div className="h-full bg-online transition-all" style={{ width: `${(ready / total) * 100}%` }} />
-        </div>
-        <button onClick={() => onEnter(match.match_id)} disabled={!allReady} className="btn-gold mt-2 px-12 py-4 text-base">
-          Enter match
-        </button>
+        {allReady ? (
+          <div className="flex flex-col items-center gap-2" aria-live="assertive">
+            <p className="font-display text-sm font-bold tracking-[0.25em] text-online uppercase">All players ready</p>
+            {left > 0 ? (
+              <span key={left} className="animate-rise font-display text-7xl font-bold text-gold tabular-nums [text-shadow:0_0_40px_rgb(245_184_61/0.5)]">
+                {left}
+              </span>
+            ) : (
+              <p className="font-display text-2xl font-bold tracking-[0.2em] text-gold uppercase">Match starting</p>
+            )}
+          </div>
+        ) : (
+          <>
+            <p className="font-display text-2xl font-bold tabular-nums">{ready} / {total} READY</p>
+            <p className="text-sm text-ink-300">
+              Waiting for {total - ready} player{total - ready === 1 ? '' : 's'}…
+            </p>
+            <div className="h-1 w-64 overflow-hidden rounded bg-white/5">
+              <div className="h-full bg-online transition-all" style={{ width: `${(ready / total) * 100}%` }} />
+            </div>
+            <button onClick={() => onReady(match.match_id)} disabled={iAmReady} className={`mt-2 px-12 py-4 text-base ${iAmReady ? 'btn-ghost !border-online/50 !text-online' : 'btn-gold'}`}>
+              {iAmReady ? '✓ READY' : 'READY'}
+            </button>
+            <button onClick={() => onLeave(match.match_id)} className="text-xs text-ink-400 underline hover:text-ink-100">
+              Decline match
+            </button>
+          </>
+        )}
       </div>
     </section>
   )

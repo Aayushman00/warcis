@@ -1,7 +1,8 @@
 """Queue and match lifecycle on MongoDB.
 
 Queue entry status:  WAITING -> MATCHED | CANCELLED | INVALIDATED
-Match status:        FOUND -> IN_PROGRESS -> COMPLETED, or FOUND -> CANCELLED (ready check timed out)
+Match status:        FOUND (ready check) -> COUNTDOWN (everyone ready) -> IN_PROGRESS -> COMPLETED
+                     FOUND | COUNTDOWN -> CANCELLED (ready check timed out, or a player left)
 """
 
 import asyncio
@@ -18,7 +19,9 @@ from app.services import party_client
 from app.services.packing import TEAM_SIZE, fifo, matchups, pack, unfilled_matchups
 
 READY_TIMEOUT = timedelta(seconds=int(os.environ.get("READY_TIMEOUT_S", "45")))
-ACTIVE = ["FOUND", "IN_PROGRESS"]
+COUNTDOWN = timedelta(seconds=int(os.environ.get("COUNTDOWN_S", "3")))
+PRE_GAME = ["FOUND", "COUNTDOWN"]
+ACTIVE = [*PRE_GAME, "IN_PROGRESS"]
 wake = asyncio.Event()  # set on enqueue so the matcher runs immediately instead of waiting a tick
 _tick_lock = asyncio.Lock()
 
@@ -107,19 +110,24 @@ def match_view(m: dict, user_id: str) -> dict:
         "my_team": mine,
         "ready": m["ready"],
         "entered": m["entered"],
+        "countdown_ends_at": m["countdown_ends_at"].isoformat() if m.get("countdown_ends_at") else None,
     }
 
 
 async def status(user_id: str) -> dict:
     m = await matches.find_one(_active_match_filter(user_id), sort=[("created_at", -1)])
     if m:
-        return {"state": "entered" if user_id in m["entered"] else "found", "match": match_view(m, user_id)}
+        if m["status"] == "COUNTDOWN":
+            m = await _start_if_due(m) or m
+        state = "entered" if user_id in m["entered"] else "countdown" if m["status"] == "COUNTDOWN" else "found"
+        return {"state": state, "match": match_view(m, user_id)}
 
     entry = await queue.find_one({"player_ids": user_id, "status": "WAITING"})
     if not entry:
         last = await matches.find_one({"player_ids": user_id, "status": "CANCELLED"}, sort=[("created_at", -1)])
         recent = last and now() - last["ended_at"] < timedelta(seconds=10)
-        return {"state": "idle", "notice": "Match cancelled: not every player readied up." if recent else None}
+        notice = "Match cancelled: a player left." if recent and last.get("reason") == "player_left" else "Match cancelled: not every player readied up."
+        return {"state": "idle", "notice": notice if recent else None}
 
     waiting = await queue.find({"status": "WAITING", "mode": entry["mode"]}).to_list(None)
     # The matcher may claim our entry between the two reads above. Keep it in the pool so the
@@ -159,29 +167,48 @@ async def _own_match(match_id: str, user_id: str) -> dict:
 
 async def ready(match_id: str, user_id: str) -> dict:
     await _own_match(match_id, user_id)
-    r = await matches.update_one({"match_id": match_id, "status": "FOUND"}, {"$addToSet": {"ready": user_id}})
-    if r.matched_count == 0:
+    before = await matches.find_one_and_update(
+        {"match_id": match_id, "status": "FOUND"}, {"$addToSet": {"ready": user_id}}, return_document=ReturnDocument.BEFORE
+    )
+    if not before:
         raise ApiError(409, "MATCH_NOT_READYABLE", "This match is no longer accepting ready checks.")
-    if r.modified_count:
+    if user_id not in before["ready"]:
         await log(match_id, "PLAYER_READY", user_id)
+    if set(before["player_ids"]) <= set(before["ready"]) | {user_id}:
+        # Conditional on FOUND: of several racing last-readiers exactly one starts the countdown.
+        go = await matches.update_one(
+            {"match_id": match_id, "status": "FOUND"}, {"$set": {"status": "COUNTDOWN", "countdown_ends_at": now() + COUNTDOWN}}
+        )
+        if go.modified_count:
+            await log(match_id, "COUNTDOWN_STARTED")
     return await status(user_id)
 
 
-async def enter(match_id: str, user_id: str) -> dict:
-    m = await _own_match(match_id, user_id)
-    if set(m["player_ids"]) - set(m["ready"]):
-        raise ApiError(409, "NOT_ALL_READY", "Waiting for every player to ready up.")
-    if m["status"] not in ACTIVE:
-        raise ApiError(409, "MATCH_CLOSED", "This match has ended.")
-    await matches.update_one({"match_id": match_id}, {"$addToSet": {"entered": user_id}, "$set": {"status": "IN_PROGRESS"}})
-    await log(match_id, "PLAYER_ENTERED", user_id)
-    return await status(user_id)
+async def _start_if_due(m: dict) -> dict | None:
+    """COUNTDOWN -> IN_PROGRESS once the deadline passed; every player is entered by the server."""
+    if m["countdown_ends_at"].replace(tzinfo=timezone.utc) > now():
+        return None
+    r = await matches.find_one_and_update(
+        {"match_id": m["match_id"], "status": "COUNTDOWN"},
+        {"$set": {"status": "IN_PROGRESS", "entered": m["player_ids"]}},
+        return_document=ReturnDocument.AFTER,
+    )
+    if r:
+        await log(m["match_id"], "MATCH_STARTED")
+    return r or await matches.find_one({"match_id": m["match_id"]})
 
 
 async def leave(match_id: str, user_id: str) -> None:
     """End-of-demo 'Return to hub'. Match completes once everyone has left."""
     # Add and read back in one atomic step: every concurrent leaver sees all earlier leaves, so
     # the last one always completes the match (a separate read here left matches IN_PROGRESS).
+    # Leaving before the game starts voids the match for everyone.
+    cancelled = await matches.update_one(
+        {"match_id": match_id, "player_ids": user_id, "status": {"$in": PRE_GAME}},
+        {"$set": {"status": "CANCELLED", "ended_at": now(), "reason": "player_left"}},
+    )
+    if cancelled.modified_count:
+        await log(match_id, "MATCH_CANCELLED", user_id, reason="player_left")
     m = await matches.find_one_and_update(
         {"match_id": match_id, "player_ids": user_id}, {"$addToSet": {"left": user_id}}, return_document=ReturnDocument.AFTER
     )
@@ -189,7 +216,7 @@ async def leave(match_id: str, user_id: str) -> None:
         raise ApiError(404, "MATCH_NOT_FOUND", "Match not found.")
     await log(match_id, "PLAYER_LEFT", user_id)
     if set(m["player_ids"]) <= set(m["left"]):
-        done = await matches.update_one({"match_id": match_id, "status": {"$ne": "COMPLETED"}}, {"$set": {"status": "COMPLETED", "ended_at": now()}})
+        done = await matches.update_one({"match_id": match_id, "status": {"$nin": ["COMPLETED", "CANCELLED"]}}, {"$set": {"status": "COMPLETED", "ended_at": now()}})
         if done.modified_count:  # exactly one of the racing leavers logs it
             await log(match_id, "MATCH_COMPLETED")
 
@@ -236,6 +263,8 @@ async def tick() -> None:
         async for m in expired:
             await matches.update_one({"_id": m["_id"], "status": "FOUND"}, {"$set": {"status": "CANCELLED", "ended_at": now()}})
             await log(m["match_id"], "MATCH_CANCELLED", reason="ready_timeout")
+        async for m in matches.find({"status": "COUNTDOWN", "countdown_ends_at": {"$lte": now()}}):
+            await _start_if_due(m)
 
         waiting = await queue.find({"status": "WAITING"}).to_list(None)
         if not waiting:

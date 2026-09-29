@@ -126,16 +126,24 @@ assert sorted(len(p["players"]) for p in other["parties"]) == [1, 1, 2]
 print("  ok  match found: [4 premade] vs [2 + 1 + 1]")
 
 everyone = (a, b, c, d, e, f, g, h)
-expect("NOT_ALL_READY", a.call, "POST", f"/matchmaking/matches/{m['match_id']}/enter")
-for x in everyone:
-    assert x.status()["state"] == "found"
-    x.call("POST", f"/matchmaking/matches/{m['match_id']}/ready")
-assert a.call("POST", f"/matchmaking/matches/{m['match_id']}/enter")["state"] == "entered"
-expect("MATCH_NOT_FOUND", user("zed").call, "POST", f"/matchmaking/matches/{m['match_id']}/ready")
+mid = m["match_id"]
+assert m["ready"] == [] and m["status"] == "FOUND", "nobody is auto-ready"
+time.sleep(1.5)
+assert a.status()["state"] == "found", "match must not start by itself"
+for n, x in enumerate(everyone, 1):
+    st = x.call("POST", f"/matchmaking/matches/{mid}/ready")
+    if n < len(everyone):
+        assert st["state"] == "found" and len(st["match"]["ready"]) == n, "not started until ALL ready"
+        assert len(everyone[-1].status()["match"]["ready"]) == n  # other clients see it (server-persisted)
+assert st["state"] == "countdown" and st["match"]["countdown_ends_at"], "last ready starts the countdown"
+expect("MATCH_NOT_READYABLE", a.call, "POST", f"/matchmaking/matches/{mid}/ready")
+wait_for(a.status, lambda s: s["state"] == "entered", timeout=8)
+assert all(x.status()["state"] == "entered" for x in everyone)
+expect("MATCH_NOT_FOUND", user("zed").call, "POST", f"/matchmaking/matches/{mid}/ready")
 for x in everyone:
     x.call("POST", f"/matchmaking/matches/{m['match_id']}/leave")
 assert a.status()["state"] == "idle"
-print("  ok  ready check -> enter -> leave, outsiders rejected")
+print("  ok  found -> explicit ready -> countdown -> in progress -> leave, outsiders rejected")
 
 print("cross-db consistency")
 i, j = user("ivy"), user("jo")
@@ -158,9 +166,10 @@ l.call("POST", "/matchmaking/queue", {"mode": "squad", "fill": False})
 m2.call("POST", "/matchmaking/queue", {"mode": "squad", "fill": False})
 found = wait_for(l.status, lambda s: s["state"] == "found")["match"]
 assert sorted(len(t["players"]) for t in found["teams"]) == [1, 1]
-for x in (l, m2):
-    x.call("POST", f"/matchmaking/matches/{found['match_id']}/ready")
-    x.call("POST", f"/matchmaking/matches/{found['match_id']}/leave")
+l.call("POST", f"/matchmaking/matches/{found['match_id']}/ready")
+m2.call("POST", f"/matchmaking/matches/{found['match_id']}/leave")  # leaving during the ready check voids it
+assert m2.status()["state"] == "idle"
+assert wait_for(l.status, lambda s: s["state"] == "idle")["notice"]
 print("  ok  fill off: two solo parties matched as-is, never combined")
 
 print("\nALL E2E CHECKS PASSED")

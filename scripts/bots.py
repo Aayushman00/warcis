@@ -27,6 +27,7 @@ SIZES = [int(s) for s in os.environ.get("BOT_PARTIES", "2,1,3,1").split(",") if 
 NAMES = ["Nocturne", "Rook", "Zephyr", "Calyx", "Ironwren", "Pax", "Dusk", "Morrow", "Kestrel", "Nimbus",
          "Tallis", "Orrin", "Vex", "Saltmoth", "Juno", "Brask"]
 WS_URL = API.replace("http", "ws", 1) + "/game/ws"
+READY_DELAY_S = (15.0, 20.0)  # must stay under the server's READY_TIMEOUT_S (45)
 RECONNECT_FOR_S = 90  # keep retrying a lost game connection this long (covers a game-service restart)
 assert sum(SIZES) <= len(NAMES) and all(1 <= s <= 4 for s in SIZES), "BOT_PARTIES: sizes 1-4, at most 16 bots"
 
@@ -69,6 +70,7 @@ def main() -> None:
             time.sleep(3)
 
     sessions: dict[str, threading.Thread] = {}  # bot id -> thread playing its current match
+    ready_at: dict[tuple[str, str], float] = {}  # (bot id, match id) -> when this bot accepts
     done: set[tuple[str, str]] = set()  # (bot id, match id) already played and left
     while True:
         for g in groups:
@@ -83,19 +85,23 @@ def main() -> None:
                 r = quiet(leader.call, "POST", "/matchmaking/queue", {"mode": "squad"})
                 if isinstance(r, ApiFail):
                     print(f"[bots] {leader.me['name']} queue: {r}", flush=True)
-            elif s["state"] in ("found", "entered"):
+            elif s["state"] in ("found", "countdown", "entered"):
                 m = s["match"]
                 mid = m["match_id"]
                 for b in g:
-                    if b.me["id"] not in m["ready"]:
+                    bid = b.me["id"]
+                    if bid in m["ready"]:
+                        continue
+                    # Independent 15-20 s accept delay per bot: real players get to join and ready first.
+                    due = ready_at.setdefault((bid, mid), time.monotonic() + random.uniform(*READY_DELAY_S))
+                    if time.monotonic() >= due:
                         quiet(b.call, "POST", f"/matchmaking/matches/{mid}/ready")
-                if len(m["ready"]) < sum(len(t["players"]) for t in m["teams"]):
+                if s["state"] != "entered":  # the server starts the match after its countdown
                     continue
                 for b in g:
                     bid = b.me["id"]
                     if (bid, mid) in done or (bid in sessions and sessions[bid].is_alive()):
                         continue
-                    quiet(b.call, "POST", f"/matchmaking/matches/{mid}/enter")
                     done.add((bid, mid))
                     sessions[bid] = threading.Thread(target=play_match, args=(b.token, b.me["name"], mid), daemon=True)
                     sessions[bid].start()

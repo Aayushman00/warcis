@@ -101,6 +101,7 @@ export interface MatchDTO {
   my_team: number
   ready: string[]
   entered: string[]
+  countdown_ends_at: string | null
 }
 export type QueueDTO = {
   mode: 'SQUAD'
@@ -116,4 +117,5 @@ export type MMStatus =
   | { state: 'idle'; notice?: string | null }
   | { state: 'searching'; queue: QueueDTO }
   | { state: 'found'; match: MatchDTO }
+  | { state: 'countdown'; match: MatchDTO }
   | { state: 'entered'; match: MatchDTO }

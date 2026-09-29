@@ -269,7 +269,6 @@ function Launcher({ me, setMe }: { me: Player; setMe: (p: Player | null) => void
               me={me}
               onCancel={() => act(() => api('/matchmaking/queue', { method: 'DELETE' }), 'Left matchmaking queue')}
               onReady={(id) => act(() => api(`/matchmaking/matches/${id}/ready`, { method: 'POST' }))}
-              onEnter={(id) => act(() => api(`/matchmaking/matches/${id}/enter`, { method: 'POST' }))}
               onExit={(id) => act(() => api(`/matchmaking/matches/${id}/leave`, { method: 'POST' }), 'Match completed · returned to hub')}
             />
           ) : view === 'home' ? (

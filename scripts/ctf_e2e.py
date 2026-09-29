@@ -52,8 +52,12 @@ def form_match(n: int) -> tuple[str, list[Client], list[Client]]:
     assert {p["id"] for t in m["teams"] for p in t["players"]} == set(ids), "match has players from outside this test"
     for c in players:
         c.call("POST", f"/matchmaking/matches/{m['match_id']}/ready")
-    for c in players:
-        c.call("POST", f"/matchmaking/matches/{m['match_id']}/enter")
+    for _ in range(20):  # server-driven countdown, no manual enter
+        if players[0].status()["state"] == "entered":
+            break
+        time.sleep(0.5)
+    else:
+        raise AssertionError("match never started after everyone readied")
     red = [ids[p["id"]] for p in m["teams"][0]["players"]]
     blue = [ids[p["id"]] for p in m["teams"][1]["players"]]
     assert len(red) == len(blue) == n
@@ -272,7 +276,12 @@ def run_bots(max_s: float = 420) -> None:
         raise AssertionError("no 4v4 with the bots formed (are the bots running and idle?)")
     mid = s["match"]["match_id"]
     human.call("POST", f"/matchmaking/matches/{mid}/ready")
-    human.call("POST", f"/matchmaking/matches/{mid}/enter")
+    for _ in range(20):
+        if human.status()["state"] == "entered":
+            break
+        time.sleep(0.5)
+    else:
+        raise AssertionError("match never started after the human readied")
     print(f"1 human + 7 bots, match {mid[:8]}")
 
     async def watch():
