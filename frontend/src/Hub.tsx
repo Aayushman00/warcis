@@ -234,7 +234,7 @@ function PartySlotCard({ c, s, index }: { c: Ctx; s: Slot; index: number }) {
           </>
         ) : (
           <>
-            <span className="size-1.5 rounded-full bg-online" /> {p.status === 'away' ? 'Away' : 'Ready'}
+            <span className="size-1.5 rounded-full bg-online" /> {p.status === 'away' ? 'Away' : 'Online'}
           </>
         )}
       </p>
