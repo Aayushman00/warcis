@@ -15,7 +15,7 @@ from pymongo.errors import DuplicateKeyError
 
 from app.db.mongo import events, matches, queue
 from app.services import party_client
-from app.services.packing import TEAM_SIZE, fifo, matchups, pack
+from app.services.packing import TEAM_SIZE, fifo, matchups, pack, unfilled_matchups
 
 READY_TIMEOUT = timedelta(seconds=int(os.environ.get("READY_TIMEOUT_S", "45")))
 ACTIVE = ["FOUND", "IN_PROGRESS"]
@@ -38,23 +38,21 @@ def _active_match_filter(user_id: str) -> dict:
 # ─────────────── queue ───────────────
 
 
-async def enqueue(user_id: str, mode: str) -> dict:
+async def enqueue(user_id: str, mode: str, fill: bool = True) -> dict:
     party = await party_client.party_for_queue(user_id)  # authoritative snapshot from Postgres
     size = len(party["members"])
     if party["leader_id"] != user_id:
         raise ApiError(403, "NOT_LEADER", "Only the party leader can start matchmaking.")
     if party["pending_invites"]:
         raise ApiError(409, "INVITES_PENDING", "Wait for pending invites to be answered or cancel them.")
-    if mode == "random" and size > 1:
-        raise ApiError(400, "RANDOM_SOLO_ONLY", "Random queue is solo only. Pick Squad to queue as a party.")
     if not 1 <= size <= TEAM_SIZE:
         raise ApiError(409, "INVALID_PARTY_SIZE", "Party size must be between 1 and 4.")
 
     ids = [m["id"] for m in party["members"]]
     existing = await queue.find_one({"party_id": party["party_id"], "status": "WAITING"})
-    if existing and existing["party_version"] == party["version"] and existing["mode"] == mode.upper():
+    if existing and existing["party_version"] == party["version"] and existing["mode"] == mode.upper() and existing["fill"] == fill:
         return await status(user_id)  # idempotent: same party, same snapshot, already queued
-    if existing:  # party changed or switched mode since queuing: replace the stale entry
+    if existing:  # party changed or switched mode/fill since queuing: replace the stale entry
         await queue.update_one({"_id": existing["_id"], "status": "WAITING"}, {"$set": {"status": "INVALIDATED"}})
     if await queue.find_one({"player_ids": {"$in": ids}, "status": "WAITING"}):
         raise ApiError(409, "ALREADY_QUEUED", "A party member is already in another queue.")
@@ -69,6 +67,7 @@ async def enqueue(user_id: str, mode: str) -> dict:
                 "party_version": party["version"],
                 "leader_id": party["leader_id"],
                 "mode": mode.upper(),
+                "fill": fill,
                 "players": party["members"],  # denormalized name snapshot: queue docs are short-lived
                 "player_ids": ids,
                 "size": size,
@@ -126,13 +125,18 @@ async def status(user_id: str) -> dict:
     # The matcher may claim our entry between the two reads above. Keep it in the pool so the
     # preview still finds our team (the next poll sees the match) instead of raising StopIteration.
     waiting = [e for e in waiting if e["queue_id"] != entry["queue_id"]] + [entry]
-    team = next(t for t in pack(waiting) if any(e["queue_id"] == entry["queue_id"] for e in t))
-    # Show our own party first, then the parties we'd currently be grouped with.
-    team = [entry] + [e for e in fifo(team) if e["queue_id"] != entry["queue_id"]]
+    if entry["fill"]:
+        pool = [e for e in waiting if e["fill"]]
+        team = next(t for t in pack(pool) if any(e["queue_id"] == entry["queue_id"] for e in t))
+        # Show our own party first, then the parties we'd currently be grouped with.
+        team = [entry] + [e for e in fifo(team) if e["queue_id"] != entry["queue_id"]]
+    else:
+        team = [entry]  # fill off: never grouped with anyone else while searching
     return {
         "state": "searching",
         "queue": {
             "mode": entry["mode"],
+            "fill": entry["fill"],
             "party_id": entry["party_id"],
             "leader_id": entry["leader_id"],
             "size": entry["size"],
@@ -243,8 +247,11 @@ async def tick() -> None:
             await queue.update_many({"party_id": {"$in": list(stale)}, "status": "WAITING"}, {"$set": {"status": "INVALIDATED"}})
             waiting = [e for e in waiting if e["party_id"] not in stale]
 
-        for mode in ("SQUAD", "RANDOM"):
-            for a, b in matchups([e for e in waiting if e["mode"] == mode]):
+        for mode in ("SQUAD",):
+            pool = [e for e in waiting if e["mode"] == mode]
+            for a, b in matchups([e for e in pool if e["fill"]]):
+                await _create_match(mode, a, b)
+            for a, b in unfilled_matchups([e for e in pool if not e["fill"]]):
                 await _create_match(mode, a, b)
 
 

@@ -9,7 +9,7 @@ router = APIRouter(prefix="/matchmaking")
 
 @router.post("/queue")
 async def join_queue(body: QueueIn, me: CurrentUser = Depends(current_user)):
-    return await queue.enqueue(me.id, body.mode)
+    return await queue.enqueue(me.id, body.mode, body.fill)
 
 
 @router.delete("/queue", status_code=204)

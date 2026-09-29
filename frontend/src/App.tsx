@@ -50,6 +50,7 @@ function Launcher({ me, setMe }: { me: Player; setMe: (p: Player | null) => void
   const [social, setSocial] = useState<SocialState | null>(null)
   const [mm, setMm] = useState<MMStatus>({ state: 'idle' })
   const [mode, setMode] = useState<Mode>('squad')
+  const [fill, setFill] = useState(true)
   const [activity, setActivity] = useState(() => [{ id: 0, text: 'Signed in to WARCIS', t: Date.now() }])
   const [toast, setToast] = useState<string | null>(null)
   const [menu, setMenu] = useState(false)
@@ -129,11 +130,13 @@ function Launcher({ me, setMe }: { me: Player; setMe: (p: Player | null) => void
     requestsOut,
     party,
     mode,
+    fill,
     activity,
     isLeader,
     slotsUsed,
     setView,
     setMode,
+    setFill,
     canInvite,
     inParty,
     invite: (f) => act(() => api('/social/party/invitations', { method: 'POST', body: { user_id: f.id } }), `Invited ${f.name} to your party`),
@@ -161,8 +164,8 @@ function Launcher({ me, setMe }: { me: Player; setMe: (p: Player | null) => void
     declineRequest: (p) => act(() => api(`/social/friend-requests/${p.requestId}/reject`, { method: 'POST' })),
     matchmake: () =>
       act(
-        () => api('/matchmaking/queue', { method: 'POST', body: { mode } }),
-        `Entered ${mode === 'squad' ? 'Squad' : 'Random'} queue (${party.members.length}/${MAX_PARTY})`,
+        () => api('/matchmaking/queue', { method: 'POST', body: { mode, fill } }),
+        `Entered queue (${party.members.length}/${MAX_PARTY})${fill ? '' : ', fill off'}`,
       ),
   }
 

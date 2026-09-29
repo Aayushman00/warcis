@@ -25,7 +25,7 @@ function groupsOf(team: TeamDTO, meId: string, letters: { next: number }): Group
 }
 
 const clock = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
-const modeLabel = (m: 'SQUAD' | 'RANDOM') => (m === 'SQUAD' ? 'Squad' : 'Random')
+const modeLabel = (_m: 'SQUAD') => 'Squad'
 
 export function Matchmaking({
   status,
@@ -57,7 +57,8 @@ function Searching({ q, me, onCancel }: { q: QueueDTO; me: Player; onCancel: () 
   const ours = groupsOf(q.team, me.id, { next: 0 })
   const filled = q.team.players.length
   const modeName = modeLabel(q.mode)
-  const title = filled < MAX_PARTY ? 'Searching for match' : 'Searching for opponents'
+  const openSlots = q.fill ? MAX_PARTY - filled : 0
+  const title = openSlots > 0 ? 'Searching for match' : 'Searching for opponents'
 
   return (
     <section className="panel relative flex min-h-[calc(100vh-8rem)] flex-col items-center overflow-hidden px-4 py-10 text-center" aria-live="polite">
@@ -82,6 +83,7 @@ function Searching({ q, me, onCancel }: { q: QueueDTO; me: Player; onCancel: () 
       <h1 className="relative font-display text-3xl font-bold tracking-wider uppercase">{title}</h1>
       <p className="relative mt-2 text-sm text-ink-300">
         Party <b>{q.size} / {MAX_PARTY}</b> <span className="mx-2 text-ink-600">|</span> Mode <b>{modeName}</b>
+        <span className="mx-2 text-ink-600">|</span> <b>{q.fill ? 'Fill' : 'No fill'}</b>
       </p>
 
       {/* Team formation: live grouping from the server's current queue packing */}
@@ -89,14 +91,14 @@ function Searching({ q, me, onCancel }: { q: QueueDTO; me: Player; onCancel: () 
         <div className="mb-3 flex items-center justify-between">
           <span className="label !text-ally">Your team</span>
           <span className="font-display text-sm font-semibold">
-            {filled} / {MAX_PARTY}
+            {filled} / {q.fill ? MAX_PARTY : filled}
           </span>
         </div>
         <div className="flex flex-wrap justify-center gap-3">
           {ours.map((g) => (
             <GroupBox key={g.players[0].id} g={g} side="ally" />
           ))}
-          {Array.from({ length: MAX_PARTY - filled }, (_, i) => (
+          {Array.from({ length: openSlots }, (_, i) => (
             <div key={i} className="flex w-28 flex-col items-center gap-2 rounded-xl border border-dashed border-white/12 p-3">
               <span className="grid size-14 place-items-center rounded-[28%] bg-white/[0.03]">
                 <span className="size-5 animate-spin rounded-full border-2 border-ink-600 border-t-ally" />
@@ -106,9 +108,9 @@ function Searching({ q, me, onCancel }: { q: QueueDTO; me: Player; onCancel: () 
           ))}
         </div>
         <p className="mt-4 text-xs text-ink-400">
-          {q.mode === 'SQUAD'
+          {q.fill
             ? 'Your party stays together. Open slots fill with other queued parties and solo players.'
-            : 'Random queue: solo players are grouped into teams of four.'}
+            : 'Fill off: your party size is locked. Waiting for an opponent, any size.'}
         </p>
       </div>
 
@@ -173,9 +175,7 @@ function Found({ match, me, onReady, onEnter }: { match: MatchDTO; me: Player; o
         <h2 className={`font-display text-xl font-bold tracking-wider uppercase ${side === 'ally' ? 'text-ally' : 'text-foe'}`}>
           {side === 'ally' ? 'Your team' : 'Opponent team'}
         </h2>
-        <span className="text-sm text-ink-400">
-          {groups.reduce((n, g) => n + g.players.length, 0)} / {MAX_PARTY} players
-        </span>
+        <span className="text-sm text-ink-400">{groups.reduce((n, g) => n + g.players.length, 0)} players</span>
       </div>
       <div className={`flex flex-wrap gap-3 ${side === 'foe' ? 'lg:justify-end' : ''}`}>
         {groups.map((g) => (

@@ -94,7 +94,7 @@ export interface TeamDTO {
 }
 export interface MatchDTO {
   match_id: string
-  mode: 'SQUAD' | 'RANDOM'
+  mode: 'SQUAD'
   status: string
   created_at: string
   teams: TeamDTO[]
@@ -103,7 +103,8 @@ export interface MatchDTO {
   entered: string[]
 }
 export type QueueDTO = {
-  mode: 'SQUAD' | 'RANDOM'
+  mode: 'SQUAD'
+  fill: boolean
   party_id: string
   leader_id: string
   size: number

@@ -199,7 +199,7 @@ All routes are behind the gateway at `/api`. Errors always have the shape
 | DELETE | `/social/party/members/{user_id}` | Kick (leader only). |
 | GET | `/social/invitations` | Invitations sent to you. |
 | POST | `/social/invitations/{id}/accept` · `/decline` | Accepting leaves your old party in the same transaction. |
-| POST / DELETE | `/matchmaking/queue` | POST `{mode: squad\|random}` (leader only, idempotent). DELETE (any member, idempotent). |
+| POST / DELETE | `/matchmaking/queue` | POST `{mode: squad, fill: bool}` (leader only, idempotent). DELETE (any member, idempotent). |
 | GET | `/matchmaking/status` | `idle` · `searching` (with live team formation) · `found` · `entered` |
 | POST | `/matchmaking/matches/{id}/ready` · `/enter` · `/leave` | Ready check → enter (needs all ready) → back to hub. |
 
@@ -264,7 +264,7 @@ Party tables reference `auth.users` by foreign key and store **no copies** of us
 
 ```js
 // matchmaking_queue: one document per queued party
-{ queue_id, party_id, party_version, leader_id, mode: "SQUAD"|"RANDOM",
+{ queue_id, party_id, party_version, leader_id, mode: "SQUAD", fill: bool,
   players: [{id, name, tag}], player_ids: [...], size: 1..4,
   joined_at, status: "WAITING"|"MATCHED"|"CANCELLED"|"INVALIDATED", match_id? }
 // unique partial index {party_id} where status = "WAITING"  → a party cannot queue twice
@@ -281,12 +281,14 @@ Party tables reference `auth.users` by foreign key and store **no copies** of us
 
 ### Matching algorithm (`matchmaking-service/app/services/packing.py`)
 
-This is deterministic and has no MMR. Parties are never split. The oldest waiting party
-anchors a team, which is completed by the combination of later parties that adds up to
-exactly 4 players, preferring the **fewest** parties and then the earliest. A full premade
-of 4 is a team on its own. Two full teams, in queue order, make a match. Random mode is
-solo only, so it groups 8 solos. The same function drives the *"Your team x / 4"* preview on
-the searching screen, so the preview always matches the team you will actually get.
+This is deterministic and has no MMR. Parties are never split. With `fill: true` (default),
+the oldest waiting party anchors a team, which is completed by the combination of later
+parties that adds up to exactly 4 players, preferring the **fewest** parties and then the
+earliest. A full premade of 4 is a team on its own. Two full teams, in queue order, make a
+match. With `fill: false`, a party is queued and matched exactly as-is: never combined with
+another party, FIFO-paired against whichever other `fill: false` party is next regardless of
+size (e.g. 3v2). The two pools never mix. The same functions drive the *"Your team"* preview
+on the searching screen, so the preview always matches the team you will actually get.
 
 ---
 
@@ -323,8 +325,7 @@ The gap between the two is closed with **optimistic validation**:
 
 1. On enqueue, matchmaking asks party-service (HTTP, `/internal/parties/for-queue/{user}`)
    for a fresh snapshot: members, leader, `version`, pending invites. It checks
-   *leader-only*, *no pending invites*, *random = solo*, and then stores `party_version` in
-   the queue document.
+   *leader-only* and *no pending invites*, then stores `party_version` in the queue document.
 2. Every membership or leader change in Postgres bumps `parties.version` inside the same
    transaction.
 3. Every matcher tick (about 1 s) sends one batch call, `/internal/parties/validate`, with

@@ -103,7 +103,6 @@ b.invite_and_join(a)
 assert len(b.state()["party"]["members"]) == 4 and a.state()["party"]["leader_id"] == b.me["id"]
 
 print("matchmaking")
-expect("RANDOM_SOLO_ONLY", b.call, "POST", "/matchmaking/queue", {"mode": "random"})
 s1 = b.call("POST", "/matchmaking/queue", {"mode": "squad"})
 s2 = b.call("POST", "/matchmaking/queue", {"mode": "squad"})  # idempotent
 assert s1["state"] == s2["state"] == "searching" and s1["queue"]["party_id"] == s2["queue"]["party_id"]
@@ -147,10 +146,21 @@ j.call("POST", "/social/party/leave")  # Postgres changes while the Mongo entry 
 wait_for(i.status, lambda s: s["state"] == "idle")
 print("  ok  stale queue entry invalidated after party changed in Postgres")
 k = user("kai")
-k.call("POST", "/matchmaking/queue", {"mode": "random"})
+k.call("POST", "/matchmaking/queue", {"mode": "squad"})
 k.call("DELETE", "/matchmaking/queue")
 k.call("DELETE", "/matchmaking/queue")  # idempotent
 assert k.status()["state"] == "idle"
-print("  ok  solo random queue + idempotent cancel")
+print("  ok  solo queue + idempotent cancel")
+
+print("fill off")
+l, m2 = user("lea"), user("moe")
+l.call("POST", "/matchmaking/queue", {"mode": "squad", "fill": False})
+m2.call("POST", "/matchmaking/queue", {"mode": "squad", "fill": False})
+found = wait_for(l.status, lambda s: s["state"] == "found")["match"]
+assert sorted(len(t["players"]) for t in found["teams"]) == [1, 1]
+for x in (l, m2):
+    x.call("POST", f"/matchmaking/matches/{found['match_id']}/ready")
+    x.call("POST", f"/matchmaking/matches/{found['match_id']}/leave")
+print("  ok  fill off: two solo parties matched as-is, never combined")
 
 print("\nALL E2E CHECKS PASSED")
