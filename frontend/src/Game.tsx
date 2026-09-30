@@ -11,7 +11,7 @@ import { color, cssVars, other, type Team } from './game/tokens'
    turns snapshot changes into HUD feedback. React only re-renders when HUD data changes;
    per-frame numbers (clock, respawn ring) are written straight to the DOM. */
 
-type Msg = Snapshot | { t: 'hello'; you: string; map: GMap } | { t: 'error'; code: string; message: string }
+type Msg = Snapshot | { t: 'hello'; you: string; map: GMap } | { t: 'error'; code: string; message: string } | { t: 'pong'; c: number }
 type Who = { name: string; team: Team }
 type FlagHud = { state: 'AT_BASE' | 'CARRIED' | 'DROPPED'; carrier: Who | null; returnAt: number | null }
 type Hud = {
@@ -37,12 +37,40 @@ const KEYS: Record<string, 'up' | 'down' | 'left' | 'right'> = {
   ArrowRight: 'right',
 }
 const RECONNECT_FOR_MS = 60_000
+const PING_EVERY_MS = 2000
 const INTRO_IF_YOUNGER_MS = 15_000
 const tc = (t: Team) => (t === 'RED' ? 'g-red' : 'g-blue')
 const cap = (t: Team) => t[0] + t.slice(1).toLowerCase()
 const clock = (ms: number) => {
   const s = Math.max(0, Math.floor(ms / 1000))
   return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`
+}
+
+/* Everyone plays as BLUE on the left. Server: team 0 = RED left, team 1 = BLUE right, map
+   mirrored left/right (sim.py WALLS). So team 0 only swaps colors; team 1 only mirrors x
+   (and mirrors left/right + aim back on the way out). The server never knows. */
+type View = { mirror: boolean; swap: boolean }
+const viewOf = (myTeam: number): View => ({ mirror: myTeam === 1, swap: myTeam === 0 })
+function viewMap(m: GMap, v: View): GMap {
+  const t = (x: Team) => (v.swap ? other(x) : x)
+  const x = (x: number) => (v.mirror ? m.w - x : x)
+  return {
+    ...m,
+    walls: v.mirror ? m.walls.map(([wx, y, w, h]) => [m.w - wx - w, y, w, h]) : m.walls,
+    bases: m.bases.map((b) => ({ ...b, team: t(b.team), x: x(b.x) })),
+    spawns: m.spawns.map((s) => ({ ...s, team: t(s.team), x: x(s.x) })),
+  }
+}
+function viewSnap(s: Snapshot, w: number, v: View): Snapshot {
+  const t = (x: Team) => (v.swap ? other(x) : x)
+  const x = (x: number) => (v.mirror ? w - x : x)
+  return {
+    ...s,
+    winner: s.winner && t(s.winner),
+    players: s.players.map((p) => ({ ...p, team: t(p.team), x: x(p.x) })),
+    flags: s.flags.map((f) => ({ ...f, team: t(f.team), x: x(f.x) })),
+    shots: s.shots.map((o) => ({ ...o, team: t(o.team), x: x(o.x) })),
+  }
 }
 
 function hudOf(s: Snapshot, meId: string): Hud {
@@ -126,6 +154,7 @@ export function Game({ match, me, onExit }: { match: MatchDTO; me: Player; onExi
   const [conn, setConn] = useState<'connecting' | 'live' | 'reconnecting'>('connecting')
   const [fatal, setFatal] = useState<string | null>(null)
   const [muted, setMutedUi] = useState(isMuted)
+  const [ping, setPing] = useState<number | null>(null)
 
   useEffect(() => {
     unlockAudio() // the player just clicked "Enter match", so audio is allowed
@@ -145,6 +174,10 @@ export function Game({ match, me, onExit }: { match: MatchDTO; me: Player; onExi
     const later = (ms: number, fn: () => void) => void timers.push(setTimeout(fn, ms))
     const held = { up: false, down: false, left: false, right: false }
     const send = (m: object) => ws?.readyState === WebSocket.OPEN && ws.send(JSON.stringify(m))
+    const view = viewOf(match.my_team)
+    const flip = view.mirror
+    const sendInput = () => send({ t: 'input', ...held, ...(flip && { left: held.right, right: held.left }) })
+    const fire = (p: { x: number; y: number }) => send({ t: 'fire', x: flip ? dims.w - p.x : p.x, y: p.y })
 
     const announce = (title: string, sub: string, team: Team, at: number) => rend.current?.at(at, () => setBanner({ id: ++seq, title, sub, team }))
 
@@ -239,18 +272,23 @@ export function Game({ match, me, onExit }: { match: MatchDTO; me: Player; onExi
           prev = null
           introPlayed ||= rend.current !== null // a reconnect never replays the intro
           tl.current.reset() // fresh timeline after a reconnect: no sliding from stale positions
-          dims = m.map
-          rend.current ??= new Renderer(m.map, me.id)
-          setMap((old) => old ?? m.map)
+          const vm = viewMap(m.map, view)
+          dims = vm
+          rend.current ??= new Renderer(vm, me.id)
+          setMap((old) => old ?? vm)
           setConn('live')
-          send({ t: 'input', ...held })
+          sendInput()
+          send({ t: 'ping', c: performance.now() })
+        } else if (m.t === 'pong') {
+          setPing(Math.round(performance.now() - m.c))
         } else if (m.t === 'error') {
           done = true
           setFatal(m.message)
-        } else onSnapshot(m)
+        } else onSnapshot(viewSnap(m, dims.w, view))
       }
       ws.onclose = () => {
         if (stopped || done) return
+        setPing(null)
         lostSince ??= Date.now()
         if (Date.now() - lostSince > RECONNECT_FOR_MS) {
           setFatal('Lost connection to the match server.')
@@ -268,13 +306,13 @@ export function Game({ match, me, onExit }: { match: MatchDTO; me: Player; onExi
       if (!k || held[k] === down) return
       e.preventDefault()
       held[k] = down
-      send({ t: 'input', ...held })
+      sendInput()
     }
     const kd = onKey(true)
     const ku = onKey(false)
     const blur = () => {
       held.up = held.down = held.left = held.right = false
-      send({ t: 'input', ...held })
+      sendInput()
     }
 
     // Fire intent: aim point in world coords while LMB is held; the server enforces the cooldown.
@@ -289,7 +327,7 @@ export function Game({ match, me, onExit }: { match: MatchDTO; me: Player; onExi
       if (e.button !== 0 || e.target !== canvas.current) return
       aim = toWorld(e)
       lastFire = Date.now()
-      send({ t: 'fire', ...aim })
+      fire(aim)
     }
     const mm = (e: MouseEvent) => {
       if (!canvas.current || !rend.current) return
@@ -308,9 +346,10 @@ export function Game({ match, me, onExit }: { match: MatchDTO; me: Player; onExi
     const autofire = setInterval(() => {
       if (aim && Date.now() - lastFire >= 100) {
         lastFire = Date.now()
-        send({ t: 'fire', ...aim })
+        fire(aim)
       }
     }, 50)
+    const pinger = setInterval(() => send({ t: 'ping', c: performance.now() }), PING_EVERY_MS)
 
     return () => {
       stopped = true
@@ -318,6 +357,7 @@ export function Game({ match, me, onExit }: { match: MatchDTO; me: Player; onExi
       timers.forEach(clearTimeout)
       ws.close()
       clearInterval(autofire)
+      clearInterval(pinger)
       window.removeEventListener('keydown', kd)
       window.removeEventListener('keyup', ku)
       window.removeEventListener('blur', blur)
@@ -325,7 +365,7 @@ export function Game({ match, me, onExit }: { match: MatchDTO; me: Player; onExi
       window.removeEventListener('mousemove', mm)
       window.removeEventListener('mouseup', mu)
     }
-  }, [match.match_id, me.id])
+  }, [match.match_id, match.my_team, me.id])
 
   // Render loop: canvas plus the per-frame HUD numbers, written straight to the DOM.
   useEffect(() => {
@@ -383,7 +423,7 @@ export function Game({ match, me, onExit }: { match: MatchDTO; me: Player; onExi
   })()
 
   const wing = (t: Team) => {
-    const right = t === 'BLUE'
+    const right = t === 'RED'
     const f = hud?.flags[t]
     const alive = hud?.roster[t].filter((p) => p.alive).length ?? 0
     return (
@@ -435,11 +475,11 @@ export function Game({ match, me, onExit }: { match: MatchDTO; me: Player; onExi
   return (
     <div className="g-root" style={cssVars() as CSSProperties}>
       <header className="g-plate" aria-label="Match score">
-        {wing('RED')}
+        {wing('BLUE')}
         <div className="g-clock">
           <span ref={clockEl}>00:00</span>
         </div>
-        {wing('BLUE')}
+        {wing('RED')}
       </header>
 
       <main className="g-stage">
@@ -512,12 +552,12 @@ export function Game({ match, me, onExit }: { match: MatchDTO; me: Player; onExi
                         {won === null ? 'Flag captured' : won ? `${cap(hud.winner)} captured the ${other(hud.winner).toLowerCase()} flag` : `${cap(hud.winner)} captured your flag`}
                       </span>
                       <span className={`g-result-title ${won === false ? 'is-defeat' : ''}`}>{won === null ? `${hud.winner} WINS` : won ? 'VICTORY' : 'DEFEAT'}</span>
-                      <span className="g-result-score" aria-label={`Red ${score.RED}, Blue ${score.BLUE}`}>
-                        <em className="g-red">RED</em>
-                        <span className="g-red">{score.RED}</span>
-                        <i />
-                        <span className="g-blue">{score.BLUE}</span>
+                      <span className="g-result-score" aria-label={`Blue ${score.BLUE}, Red ${score.RED}`}>
                         <em className="g-blue">BLUE</em>
+                        <span className="g-blue">{score.BLUE}</span>
+                        <i />
+                        <span className="g-red">{score.RED}</span>
+                        <em className="g-red">RED</em>
                       </span>
                       {hud.capturer && <span className="g-result-by">Capture by {hud.capturer.name}</span>}
                     </>
@@ -572,6 +612,11 @@ export function Game({ match, me, onExit }: { match: MatchDTO; me: Player; onExi
             <span className={`g-carry ${tc(other(mine.team))}`}>
               <FlagIcon />
               {other(mine.team)} FLAG
+            </span>
+          )}
+          {ping !== null && !hud?.ended && (
+            <span className="g-ping" title="Round-trip time to the match server" style={{ color: ping < 80 ? color.hpHigh : ping < 150 ? color.hpMid : color.hpLow }}>
+              {ping} ms
             </span>
           )}
           <button className="g-icon-btn" onClick={() => (setMuted(!muted), setMutedUi(!muted))} aria-label={muted ? 'Unmute sound' : 'Mute sound'} aria-pressed={muted} title={muted ? 'Unmute' : 'Mute'}>

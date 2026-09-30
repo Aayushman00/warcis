@@ -634,7 +634,7 @@ function paintBackground(map: GMap): HTMLCanvasElement {
 
   // territory: a soft wash from each side, fading before midfield
   for (const t of ['RED', 'BLUE'] as const) {
-    const left = t === 'RED'
+    const left = map.bases.find((b) => b.team === t)!.x < map.w / 2
     const g = ctx.createLinearGradient(left ? 0 : map.w, 0, map.w / 2, 0)
     g.addColorStop(0, alpha(TC[t].base, 0.1))
     g.addColorStop(1, alpha(TC[t].base, 0))
@@ -706,7 +706,7 @@ function paintBackground(map: GMap): HTMLCanvasElement {
   }
   for (const s of map.spawns) {
     const tc = TC[s.team]
-    const dir = s.team === 'RED' ? 1 : -1
+    const dir = s.x < map.w / 2 ? 1 : -1 // arrow points toward midfield
     ctx.fillStyle = alpha(tc.base, 0.07)
     ctx.strokeStyle = alpha(tc.base, 0.35)
     ctx.lineWidth = 1

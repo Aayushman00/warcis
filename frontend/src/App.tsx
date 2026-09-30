@@ -8,6 +8,7 @@ import { Avatar, AvatarStatus, Icon, Logo, StatusDot } from './ui'
 
 const POLL_MS = 1500 // ponytail: HTTP polling for social + queue state; move to SSE/WebSocket when load matters
 const HEARTBEAT_MS = 10_000
+const PING_MS = 3000
 
 export default function App() {
   const [me, setMe] = useState<Player | null>(null)
@@ -54,6 +55,7 @@ function Launcher({ me, setMe }: { me: Player; setMe: (p: Player | null) => void
   const [activity, setActivity] = useState(() => [{ id: 0, text: 'Signed in to WARCIS', t: Date.now() }])
   const [toast, setToast] = useState<string | null>(null)
   const [menu, setMenu] = useState(false)
+  const [ping, setPing] = useState<number | null>(null)
   const prev = useRef<SocialState | null>(null)
   const lastNotice = useRef<string | null>(null)
 
@@ -117,6 +119,21 @@ function Launcher({ me, setMe }: { me: Player; setMe: (p: Player | null) => void
   const party = toParty(social?.party ?? null, me)
   const partyInvite = social?.invitations[0] ?? null
   const queueing = mm.state !== 'idle'
+
+  // Lobby ping: time a no-op round trip to the gateway. Off while queueing; the match has its own.
+  useEffect(() => {
+    if (queueing) return
+    const probe = () => {
+      const t = performance.now()
+      api('/ping').then(
+        () => setPing(Math.round(performance.now() - t)),
+        () => setPing(null),
+      )
+    }
+    probe()
+    const i = setInterval(probe, PING_MS)
+    return () => clearInterval(i)
+  }, [queueing])
 
   const isLeader = party.leaderId === me.id
   const slotsUsed = party.members.length + party.pending.length
@@ -226,6 +243,14 @@ function Launcher({ me, setMe }: { me: Player; setMe: (p: Player | null) => void
           </nav>
 
           <div className="ml-auto flex items-center gap-3">
+            {ping !== null && !queueing && (
+              <span
+                title="Round-trip time to WARCIS servers"
+                className={`font-display text-sm font-semibold tracking-wider tabular-nums ${ping < 80 ? 'text-online' : ping < 150 ? 'text-away' : 'text-foe'}`}
+              >
+                {ping} ms
+              </span>
+            )}
             <button onClick={() => !queueing && setView('friends')} className="hidden items-center gap-2 text-sm text-ink-300 hover:text-ink-100 md:flex">
               <Icon name="users" />
               <span>

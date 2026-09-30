@@ -247,6 +247,7 @@
 .g-right { display: flex; align-items: center; justify-content: flex-end; gap: var(--g-s3); }
 .g-carry { display: flex; align-items: center; gap: 6px; padding: 5px var(--g-s3); font-family: var(--g-font-display); font-weight: 700; font-size: 16px; letter-spacing: 0.06em; color: var(--tc-light); background: color-mix(in srgb, var(--tc) 16%, transparent); border-radius: var(--g-r-chip); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--tc) 50%, transparent); animation: g-swap var(--g-t-base) var(--g-t-ease); }
 .g-carry svg { width: 14px; height: 14px; }
+.g-ping { min-width: 52px; text-align: right; font-family: var(--g-font-display); font-weight: 600; font-size: 15px; letter-spacing: 0.04em; font-variant-numeric: tabular-nums; }
 
 /* ─────────────── controls ─────────────── */
 

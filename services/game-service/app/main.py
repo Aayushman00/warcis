@@ -6,6 +6,7 @@ The roster comes from the match document matchmaking created (teams[0] = RED,
 teams[1] = BLUE). Clients (humans and bots alike) send intents only:
     {"t": "input", "up", "down", "left", "right"}   held keys
     {"t": "fire", "x", "y"}                          aim point in world coordinates
+    {"t": "ping", "c"}                               echoed back as {"t": "pong", "c"}
 The server simulates at TICK_HZ and broadcasts {"t": "state", ...} to every client.
 `bot=1` only adds a display label; bots get no other difference.
 
@@ -232,6 +233,8 @@ async def play(ws: WebSocket, match_id: str, token: str = "", bot: int = 0):
                 x, y = msg.get("x"), msg.get("y")
                 if isinstance(x, (int, float)) and isinstance(y, (int, float)) and math.isfinite(x) and math.isfinite(y):
                     g.fire(me.id, x, y, now_ms())
+            elif msg.get("t") == "ping" and isinstance(msg.get("c"), (int, float)):
+                await _send(ws, {"t": "pong", "c": msg["c"]})  # client measures round-trip time
     except (WebSocketDisconnect, ValueError, RuntimeError):
         pass
     finally:

@@ -231,12 +231,21 @@ function Found({ match, me, onReady, onLeave }: { match: MatchDTO; me: Player; o
             <div className="h-1 w-64 overflow-hidden rounded bg-white/5">
               <div className="h-full bg-online transition-all" style={{ width: `${(ready / total) * 100}%` }} />
             </div>
-            <button onClick={() => onReady(match.match_id)} disabled={iAmReady} className={`mt-2 px-12 py-4 text-base ${iAmReady ? 'btn-ghost !border-online/50 !text-online' : 'btn-gold'}`}>
-              {iAmReady ? '✓ READY' : 'READY'}
-            </button>
-            <button onClick={() => onLeave(match.match_id)} className="text-xs text-ink-400 underline hover:text-ink-100">
-              Decline match
-            </button>
+            <div className="mt-2 grid w-full max-w-md grid-cols-2 gap-3">
+              <button
+                onClick={() => onReady(match.match_id)}
+                disabled={iAmReady}
+                className={`py-3.5 text-base ${iAmReady ? 'btn-ghost font-display tracking-[0.12em] uppercase !border-online/50 !text-online disabled:opacity-100' : 'btn-gold'}`}
+              >
+                {iAmReady && <Icon name="check" />} Ready
+              </button>
+              <button
+                onClick={() => onLeave(match.match_id)}
+                className="btn-ghost py-3.5 font-display text-base tracking-[0.12em] uppercase hover:border-foe/50 hover:bg-foe/10 hover:text-foe"
+              >
+                <Icon name="x" /> Decline
+              </button>
+            </div>
           </>
         )}
       </div>

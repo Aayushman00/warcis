@@ -3,6 +3,7 @@
     /api/auth/*, /api/users/*   -> auth-service
     /api/social/*               -> party-service
     /api/matchmaking/*          -> matchmaking-service
+    /api/ping                   -> 204 from the gateway itself (lobby latency)
     WS /api/game/*              -> game-service (WebSocket passthrough)
 
 /internal/* is never routable from outside. JWTs are forwarded untouched; each service
@@ -48,6 +49,11 @@ def error(status: int, code: str, message: str) -> JSONResponse:
 @app.get("/health")
 def health():
     return {"ok": True}
+
+
+@app.get("/api/ping", status_code=204)
+def ping():
+    """Lobby latency probe: answered here, never proxied, so it measures the network path only."""
 
 
 @app.api_route("/api/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
