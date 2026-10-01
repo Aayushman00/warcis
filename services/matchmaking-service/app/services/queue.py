@@ -127,7 +127,9 @@ async def status(user_id: str) -> dict:
     if m:
         if m["status"] == "COUNTDOWN":
             m = await _start_if_due(m) or m
-        state = "entered" if user_id in m["entered"] else "countdown" if m["status"] == "COUNTDOWN" else "found"
+        # Derived from status, not `entered`: the server enters everyone at once, and a legacy
+        # IN_PROGRESS row with the user missing from `entered` used to render as a dead "found" screen.
+        state = "entered" if m["status"] == "IN_PROGRESS" else "countdown" if m["status"] == "COUNTDOWN" else "found"
         return {"state": state, "match": match_view(m, user_id)}
 
     entry = await queue.find_one({"player_ids": user_id, "status": "WAITING"})
