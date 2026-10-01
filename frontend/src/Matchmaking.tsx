@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { MatchDTO, MMStatus, QPlayer, QueueDTO, TeamDTO } from './api'
 import { MAX_PARTY, type Player } from './data'
+import { Game } from './Game'
 import { Avatar, Icon } from './ui'
 
 type Group = { label: string; players: QPlayer[]; mine?: boolean }
@@ -24,25 +25,23 @@ function groupsOf(team: TeamDTO, meId: string, letters: { next: number }): Group
 }
 
 const clock = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
-const modeLabel = (m: 'SQUAD' | 'RANDOM') => (m === 'SQUAD' ? 'Squad' : 'Random')
+const modeLabel = (_m: 'SQUAD') => 'Squad'
 
 export function Matchmaking({
   status,
   me,
   onCancel,
   onReady,
-  onEnter,
   onExit,
 }: {
   status: Exclude<MMStatus, { state: 'idle' }>
   me: Player
   onCancel: () => void
   onReady: (matchId: string) => void
-  onEnter: (matchId: string) => void
   onExit: (matchId: string) => void
 }) {
-  if (status.state === 'entered') return <Entered onExit={() => onExit(status.match.match_id)} />
-  if (status.state === 'found') return <Found match={status.match} me={me} onReady={onReady} onEnter={onEnter} />
+  if (status.state === 'entered') return <Game match={status.match} me={me} onExit={() => onExit(status.match.match_id)} />
+  if (status.state === 'found' || status.state === 'countdown') return <Found match={status.match} me={me} onReady={onReady} onLeave={onExit} />
   return <Searching q={status.queue} me={me} onCancel={onCancel} />
 }
 
@@ -56,7 +55,8 @@ function Searching({ q, me, onCancel }: { q: QueueDTO; me: Player; onCancel: () 
   const ours = groupsOf(q.team, me.id, { next: 0 })
   const filled = q.team.players.length
   const modeName = modeLabel(q.mode)
-  const title = filled < MAX_PARTY ? 'Searching for match' : 'Searching for opponents'
+  const openSlots = q.fill ? MAX_PARTY - filled : 0
+  const title = openSlots > 0 ? 'Searching for match' : 'Searching for opponents'
 
   return (
     <section className="panel relative flex min-h-[calc(100vh-8rem)] flex-col items-center overflow-hidden px-4 py-10 text-center" aria-live="polite">
@@ -81,6 +81,7 @@ function Searching({ q, me, onCancel }: { q: QueueDTO; me: Player; onCancel: () 
       <h1 className="relative font-display text-3xl font-bold tracking-wider uppercase">{title}</h1>
       <p className="relative mt-2 text-sm text-ink-300">
         Party <b>{q.size} / {MAX_PARTY}</b> <span className="mx-2 text-ink-600">|</span> Mode <b>{modeName}</b>
+        <span className="mx-2 text-ink-600">|</span> <b>{q.fill ? 'Fill' : 'No fill'}</b>
       </p>
 
       {/* Team formation: live grouping from the server's current queue packing */}
@@ -88,14 +89,14 @@ function Searching({ q, me, onCancel }: { q: QueueDTO; me: Player; onCancel: () 
         <div className="mb-3 flex items-center justify-between">
           <span className="label !text-ally">Your team</span>
           <span className="font-display text-sm font-semibold">
-            {filled} / {MAX_PARTY}
+            {filled} / {q.fill ? MAX_PARTY : filled}
           </span>
         </div>
         <div className="flex flex-wrap justify-center gap-3">
           {ours.map((g) => (
             <GroupBox key={g.players[0].id} g={g} side="ally" />
           ))}
-          {Array.from({ length: MAX_PARTY - filled }, (_, i) => (
+          {Array.from({ length: openSlots }, (_, i) => (
             <div key={i} className="flex w-28 flex-col items-center gap-2 rounded-xl border border-dashed border-white/12 p-3">
               <span className="grid size-14 place-items-center rounded-[28%] bg-white/[0.03]">
                 <span className="size-5 animate-spin rounded-full border-2 border-ink-600 border-t-ally" />
@@ -105,9 +106,9 @@ function Searching({ q, me, onCancel }: { q: QueueDTO; me: Player; onCancel: () 
           ))}
         </div>
         <p className="mt-4 text-xs text-ink-400">
-          {q.mode === 'SQUAD'
+          {q.fill
             ? 'Your party stays together. Open slots fill with other queued parties and solo players.'
-            : 'Random queue: solo players are grouped into teams of four.'}
+            : 'Fill off: your party size is locked. Waiting for an opponent, any size.'}
         </p>
       </div>
 
@@ -142,6 +143,11 @@ function GroupBox({ g, side, readyIds, big }: { g: Group; side: 'ally' | 'foe'; 
               )}
             </div>
             <span className="w-full truncate text-center text-xs font-semibold">{p.name}</span>
+            {readyIds && (
+              <span className={`font-display text-[10px] font-bold tracking-widest ${readyIds.has(p.id) ? 'text-online' : 'text-ink-400'}`}>
+                {readyIds.has(p.id) ? 'READY ✓' : 'WAITING'}
+              </span>
+            )}
           </div>
         ))}
       </div>
@@ -149,14 +155,16 @@ function GroupBox({ g, side, readyIds, big }: { g: Group; side: 'ally' | 'foe'; 
   )
 }
 
-function Found({ match, me, onReady, onEnter }: { match: MatchDTO; me: Player; onReady: (id: string) => void; onEnter: (id: string) => void }) {
-  // Seeing MATCH FOUND counts as accepting: send our ready once per match.
-  const sent = useRef<string | null>(null)
+function Found({ match, me, onReady, onLeave }: { match: MatchDTO; me: Player; onReady: (id: string) => void; onLeave: (id: string) => void }) {
+  // Readiness is explicit: nothing is sent until the player clicks READY. The server drives the countdown.
+  const [now, setNow] = useState(() => Date.now())
+  const counting = match.status === 'COUNTDOWN' && !!match.countdown_ends_at
   useEffect(() => {
-    if (sent.current === match.match_id || match.ready.includes(me.id)) return
-    sent.current = match.match_id
-    onReady(match.match_id)
-  }, [match.match_id, match.ready, me.id, onReady])
+    if (!counting) return
+    const t = setInterval(() => setNow(Date.now()), 100)
+    return () => clearInterval(t)
+  }, [counting])
+  const left = counting ? Math.max(0, Math.ceil((Date.parse(match.countdown_ends_at!) - now) / 1000)) : 0
 
   const letters = { next: 0 }
   const ours = groupsOf(match.teams[match.my_team], me.id, letters)
@@ -165,6 +173,7 @@ function Found({ match, me, onReady, onEnter }: { match: MatchDTO; me: Player; o
   const total = match.teams.reduce((n, t) => n + t.players.length, 0)
   const ready = readyIds.size
   const allReady = ready >= total
+  const iAmReady = readyIds.has(me.id)
 
   const team = (side: 'ally' | 'foe', groups: Group[]) => (
     <div className={`flex-1 ${side === 'foe' ? 'lg:text-right' : ''}`}>
@@ -172,9 +181,7 @@ function Found({ match, me, onReady, onEnter }: { match: MatchDTO; me: Player; o
         <h2 className={`font-display text-xl font-bold tracking-wider uppercase ${side === 'ally' ? 'text-ally' : 'text-foe'}`}>
           {side === 'ally' ? 'Your team' : 'Opponent team'}
         </h2>
-        <span className="text-sm text-ink-400">
-          {groups.reduce((n, g) => n + g.players.length, 0)} / {MAX_PARTY} players
-        </span>
+        <span className="text-sm text-ink-400">{groups.reduce((n, g) => n + g.players.length, 0)} players</span>
       </div>
       <div className={`flex flex-wrap gap-3 ${side === 'foe' ? 'lg:justify-end' : ''}`}>
         {groups.map((g) => (
@@ -204,43 +211,44 @@ function Found({ match, me, onReady, onEnter }: { match: MatchDTO; me: Player; o
       </div>
 
       <div className="relative mt-12 flex flex-col items-center gap-3">
-        <p className="text-sm text-ink-300">
-          {allReady ? 'All players ready' : 'Waiting for players…'} <b className="ml-1 tabular-nums">{Math.min(ready, total)} / {total}</b>
-        </p>
-        <div className="h-1 w-64 overflow-hidden rounded bg-white/5">
-          <div className="h-full bg-online transition-all" style={{ width: `${(ready / total) * 100}%` }} />
-        </div>
-        <button onClick={() => onEnter(match.match_id)} disabled={!allReady} className="btn-gold mt-2 px-12 py-4 text-base">
-          Enter match
-        </button>
+        {allReady ? (
+          <div className="flex flex-col items-center gap-2" aria-live="assertive">
+            <p className="font-display text-sm font-bold tracking-[0.25em] text-online uppercase">All players ready</p>
+            {left > 0 ? (
+              <span key={left} className="animate-rise font-display text-7xl font-bold text-gold tabular-nums [text-shadow:0_0_40px_rgb(245_184_61/0.5)]">
+                {left}
+              </span>
+            ) : (
+              <p className="font-display text-2xl font-bold tracking-[0.2em] text-gold uppercase">Match starting</p>
+            )}
+          </div>
+        ) : (
+          <>
+            <p className="font-display text-2xl font-bold tabular-nums">{ready} / {total} READY</p>
+            <p className="text-sm text-ink-300">
+              Waiting for {total - ready} player{total - ready === 1 ? '' : 's'}…
+            </p>
+            <div className="h-1 w-64 overflow-hidden rounded bg-white/5">
+              <div className="h-full bg-online transition-all" style={{ width: `${(ready / total) * 100}%` }} />
+            </div>
+            <div className="mt-2 grid w-full max-w-md grid-cols-2 gap-3">
+              <button
+                onClick={() => onReady(match.match_id)}
+                disabled={iAmReady}
+                className={`py-3.5 text-base ${iAmReady ? 'btn-ghost font-display tracking-[0.12em] uppercase !border-online/50 !text-online disabled:opacity-100' : 'btn-gold'}`}
+              >
+                {iAmReady && <Icon name="check" />} Ready
+              </button>
+              <button
+                onClick={() => onLeave(match.match_id)}
+                className="btn-ghost py-3.5 font-display text-base tracking-[0.12em] uppercase hover:border-foe/50 hover:bg-foe/10 hover:text-foe"
+              >
+                <Icon name="x" /> Decline
+              </button>
+            </div>
+          </>
+        )}
       </div>
-    </section>
-  )
-}
-
-function Entered({ onExit }: { onExit: () => void }) {
-  const [loaded, setLoaded] = useState(false)
-  useEffect(() => {
-    const t = setTimeout(() => setLoaded(true), 1800)
-    return () => clearTimeout(t)
-  }, [])
-  return (
-    <section className="panel flex min-h-[calc(100vh-8rem)] flex-col items-center justify-center gap-4 p-8 text-center">
-      {loaded ? (
-        <>
-          <p className="label !text-gold">End of demo</p>
-          <h1 className="font-display text-3xl font-bold">Match server connected</h1>
-          <p className="max-w-md text-sm text-ink-400">Account → friends → party → queue → match. The in-match experience is outside this prototype.</p>
-          <button onClick={onExit} className="btn-ghost mt-2">
-            Return to hub
-          </button>
-        </>
-      ) : (
-        <>
-          <span className="size-8 animate-spin rounded-full border-2 border-ink-600 border-t-gold" />
-          <p className="font-display tracking-widest text-ink-300 uppercase">Connecting to match server…</p>
-        </>
-      )}
     </section>
   )
 }

@@ -10,7 +10,8 @@ that use two different databases, **PostgreSQL** for relational social state and
 SIGN IN → HOME → FRIENDS → PARTY (1–4) → MATCHMAKING → MATCH FOUND → ENTER MATCH → end of demo
 ```
 
-Gameplay and combat are out of scope for this phase.
+Entering a match drops every player into a small **Capture The Flag** game (1v1, 2v2 or 4v4)
+served by an authoritative WebSocket game-service. See [Gameplay](#gameplay-capture-the-flag).
 
 ---
 
@@ -132,6 +133,47 @@ cd services/matchmaking-service && python -m app.services.packing   # → packin
 
 ---
 
+## Gameplay: Capture The Flag
+
+`services/game-service` runs the match. Rules live in `app/sim.py` (pure, self-checking:
+`cd services/game-service && python -m app.sim`), the WebSocket loop in `app/main.py`.
+
+- **Roster** comes from the match document: `teams[0]` is RED, `teams[1]` is BLUE. No new team logic.
+- **Connect:** `WS /api/game/ws/{match_id}?token=<JWT>` (nginx → gateway → game-service). The room
+  starts on the first connection; everyone spawns at their team's spawn points.
+- **Client → server (intents only):** `{"t":"input", up, down, left, right}` and `{"t":"fire", x, y}` (aim point).
+- **Server → clients at 30 Hz:** `{"t":"state", players, flags, shots, state, winner, elapsed}`.
+- Server decides movement, wall collision, projectiles (25 dmg, 500 ms cooldown), death, 3 s respawn,
+  flag pickup / drop on death / return by own team / auto-return after 10 s, and capture.
+- **Capture** only counts while your own flag is `AT_BASE`. The first capture ends the match: the server
+  writes `result: {winner, capturer}` onto the match and logs `MATCH_ENDED`. "Return to hub" uses the
+  existing `/matchmaking/matches/{id}/leave`, which completes the match.
+
+- **Client** (`frontend/src/Game.tsx`, `src/game/`) renders ~100 ms behind the server and interpolates
+  between snapshots (no prediction: the server stays the only authority). Events such as flag stolen,
+  dropped, returned or captured, and eliminations, come from diffing snapshots. Sounds are synthesized
+  with WebAudio.
+- **Bots** (`scripts/bots.py` + `scripts/bot_ai.py`) enter the match and play over the same WebSocket
+  protocol, at ~10 Hz. They chase an enemy carrier, recover a dropped flag, attack or defend (one bot per
+  team guards the base), fight what they can see (reaction delay + aim noise), otherwise patrol. They use
+  grid BFS around walls and get no extra stats. A player with no live socket keeps their state and is shown "OFFLINE".
+- **Recovery:** every 3 s (and on clean shutdown) a small checkpoint goes to MongoDB `game_checkpoints`
+  (players, flags, timers, winner). On startup the service restores PLAYING checkpoints newer than 10 min
+  of `IN_PROGRESS` matches; clients and bots reconnect on their own. Anything else is logged and marked
+  `ABANDONED`, never invented.
+
+Full-stack checks (`pip install httpx websockets`):
+
+```bash
+python scripts/ctf_e2e.py 1 2 4          # bots stopped: real 1v1/2v2/4v4, one socket per player
+python scripts/ctf_e2e.py recovery       # restart game-service mid-match, state is restored
+CTF_CRASH=1 python scripts/ctf_e2e.py recovery   # same with SIGKILL (periodic checkpoint only)
+python scripts/ctf_e2e.py bots           # bots running: 1 human + 7 bots, restart mid-match
+python scripts/bot_ai.py                 # bots-only games against the real sim
+```
+
+1v1 and 2v2 need the queue's fill-off option.
+
 ## API overview
 
 All routes are behind the gateway at `/api`. Errors always have the shape
@@ -157,7 +199,7 @@ All routes are behind the gateway at `/api`. Errors always have the shape
 | DELETE | `/social/party/members/{user_id}` | Kick (leader only). |
 | GET | `/social/invitations` | Invitations sent to you. |
 | POST | `/social/invitations/{id}/accept` · `/decline` | Accepting leaves your old party in the same transaction. |
-| POST / DELETE | `/matchmaking/queue` | POST `{mode: squad\|random}` (leader only, idempotent). DELETE (any member, idempotent). |
+| POST / DELETE | `/matchmaking/queue` | POST `{mode: squad, fill: bool}` (leader only, idempotent). DELETE (any member, idempotent). |
 | GET | `/matchmaking/status` | `idle` · `searching` (with live team formation) · `found` · `entered` |
 | POST | `/matchmaking/matches/{id}/ready` · `/enter` · `/leave` | Ready check → enter (needs all ready) → back to hub. |
 
@@ -222,7 +264,7 @@ Party tables reference `auth.users` by foreign key and store **no copies** of us
 
 ```js
 // matchmaking_queue: one document per queued party
-{ queue_id, party_id, party_version, leader_id, mode: "SQUAD"|"RANDOM",
+{ queue_id, party_id, party_version, leader_id, mode: "SQUAD", fill: bool,
   players: [{id, name, tag}], player_ids: [...], size: 1..4,
   joined_at, status: "WAITING"|"MATCHED"|"CANCELLED"|"INVALIDATED", match_id? }
 // unique partial index {party_id} where status = "WAITING"  → a party cannot queue twice
@@ -239,12 +281,14 @@ Party tables reference `auth.users` by foreign key and store **no copies** of us
 
 ### Matching algorithm (`matchmaking-service/app/services/packing.py`)
 
-This is deterministic and has no MMR. Parties are never split. The oldest waiting party
-anchors a team, which is completed by the combination of later parties that adds up to
-exactly 4 players, preferring the **fewest** parties and then the earliest. A full premade
-of 4 is a team on its own. Two full teams, in queue order, make a match. Random mode is
-solo only, so it groups 8 solos. The same function drives the *"Your team x / 4"* preview on
-the searching screen, so the preview always matches the team you will actually get.
+This is deterministic and has no MMR. Parties are never split. With `fill: true` (default),
+the oldest waiting party anchors a team, which is completed by the combination of later
+parties that adds up to exactly 4 players, preferring the **fewest** parties and then the
+earliest. A full premade of 4 is a team on its own. Two full teams, in queue order, make a
+match. With `fill: false`, a party is queued and matched exactly as-is: never combined with
+another party, FIFO-paired against whichever other `fill: false` party is next regardless of
+size (e.g. 3v2). The two pools never mix. The same functions drive the *"Your team"* preview
+on the searching screen, so the preview always matches the team you will actually get.
 
 ---
 
@@ -281,8 +325,7 @@ The gap between the two is closed with **optimistic validation**:
 
 1. On enqueue, matchmaking asks party-service (HTTP, `/internal/parties/for-queue/{user}`)
    for a fresh snapshot: members, leader, `version`, pending invites. It checks
-   *leader-only*, *no pending invites*, *random = solo*, and then stores `party_version` in
-   the queue document.
+   *leader-only* and *no pending invites*, then stores `party_version` in the queue document.
 2. Every membership or leader change in Postgres bumps `parties.version` inside the same
    transaction.
 3. Every matcher tick (about 1 s) sends one batch call, `/internal/parties/validate`, with
@@ -311,7 +354,9 @@ unique constraints are the backstop if application code ever forgets a check.
 
 ### Known limits (deliberate for this phase)
 
-- Real-time updates use HTTP polling (1.5 s). SSE or WebSockets belong with the future game service.
+- The launcher uses HTTP polling (1.5 s); only in-match gameplay uses a WebSocket.
+- Game rooms live in game-service memory (one replica). A restart resumes from the last checkpoint
+  (at most ~3 s old after a crash); shots in flight and held keys are not persisted.
 - One matchmaking replica: the matcher loop runs in-process. Claims are already
   conditional, but running several replicas would also need a leader lock.
 - No MMR, region or latency in matchmaking. The region label in the UI is cosmetic.

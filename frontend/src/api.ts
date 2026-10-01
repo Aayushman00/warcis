@@ -94,16 +94,18 @@ export interface TeamDTO {
 }
 export interface MatchDTO {
   match_id: string
-  mode: 'SQUAD' | 'RANDOM'
+  mode: 'SQUAD'
   status: string
   created_at: string
   teams: TeamDTO[]
   my_team: number
   ready: string[]
   entered: string[]
+  countdown_ends_at: string | null
 }
 export type QueueDTO = {
-  mode: 'SQUAD' | 'RANDOM'
+  mode: 'SQUAD'
+  fill: boolean
   party_id: string
   leader_id: string
   size: number
@@ -115,4 +117,5 @@ export type MMStatus =
   | { state: 'idle'; notice?: string | null }
   | { state: 'searching'; queue: QueueDTO }
   | { state: 'found'; match: MatchDTO }
+  | { state: 'countdown'; match: MatchDTO }
   | { state: 'entered'; match: MatchDTO }

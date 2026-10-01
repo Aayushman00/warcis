@@ -53,6 +53,13 @@ def matchups(entries: list[dict]) -> list[tuple[list[dict], list[dict]]]:
     return [(ready[i], ready[i + 1]) for i in range(0, len(ready) - 1, 2)]
 
 
+def unfilled_matchups(entries: list[dict]) -> list[tuple[list[dict], list[dict]]]:
+    """fill=False: a party is its own team, never combined with others. FIFO-paired
+    against whichever other unfilled party is next, size mismatch allowed (e.g. 3v2)."""
+    ordered = fifo(entries)
+    return [([ordered[i]], [ordered[i + 1]]) for i in range(0, len(ordered) - 1, 2)]
+
+
 if __name__ == "__main__":  # self-check: python -m app.services.packing
     def e(i, size):
         return {"queue_id": f"q{i}", "joined_at": i, "size": size}
@@ -72,4 +79,7 @@ if __name__ == "__main__":  # self-check: python -m app.services.packing
     assert matchups([e(0, 3), e(1, 3)]) == []
     # Solo random queue: 8 solos -> one match.
     assert len(matchups([e(i, 1) for i in range(8)])) == 1
+    # fill=False: parties matched as-is, size mismatch allowed, never combined.
+    ms = unfilled_matchups([e(0, 3), e(1, 2), e(2, 1)])
+    assert len(ms) == 1 and [x["size"] for x in ms[0][0]] == [3] and [x["size"] for x in ms[0][1]] == [2]
     print("packing ok")

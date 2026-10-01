@@ -1,7 +1,8 @@
 """Queue and match lifecycle on MongoDB.
 
 Queue entry status:  WAITING -> MATCHED | CANCELLED | INVALIDATED
-Match status:        FOUND -> IN_PROGRESS -> COMPLETED, or FOUND -> CANCELLED (ready check timed out)
+Match status:        FOUND (ready check) -> COUNTDOWN (everyone ready) -> IN_PROGRESS -> COMPLETED
+                     FOUND | COUNTDOWN -> CANCELLED (ready check timed out, or a player left)
 """
 
 import asyncio
@@ -10,14 +11,17 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from warcis_common.errors import ApiError
+from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
 from app.db.mongo import events, matches, queue
 from app.services import party_client
-from app.services.packing import TEAM_SIZE, fifo, matchups, pack
+from app.services.packing import TEAM_SIZE, fifo, matchups, pack, unfilled_matchups
 
 READY_TIMEOUT = timedelta(seconds=int(os.environ.get("READY_TIMEOUT_S", "45")))
-ACTIVE = ["FOUND", "IN_PROGRESS"]
+COUNTDOWN = timedelta(seconds=int(os.environ.get("COUNTDOWN_S", "3")))
+PRE_GAME = ["FOUND", "COUNTDOWN"]
+ACTIVE = [*PRE_GAME, "IN_PROGRESS"]
 wake = asyncio.Event()  # set on enqueue so the matcher runs immediately instead of waiting a tick
 _tick_lock = asyncio.Lock()
 
@@ -37,23 +41,21 @@ def _active_match_filter(user_id: str) -> dict:
 # ─────────────── queue ───────────────
 
 
-async def enqueue(user_id: str, mode: str) -> dict:
+async def enqueue(user_id: str, mode: str, fill: bool = True) -> dict:
     party = await party_client.party_for_queue(user_id)  # authoritative snapshot from Postgres
     size = len(party["members"])
     if party["leader_id"] != user_id:
         raise ApiError(403, "NOT_LEADER", "Only the party leader can start matchmaking.")
     if party["pending_invites"]:
         raise ApiError(409, "INVITES_PENDING", "Wait for pending invites to be answered or cancel them.")
-    if mode == "random" and size > 1:
-        raise ApiError(400, "RANDOM_SOLO_ONLY", "Random queue is solo only. Pick Squad to queue as a party.")
     if not 1 <= size <= TEAM_SIZE:
         raise ApiError(409, "INVALID_PARTY_SIZE", "Party size must be between 1 and 4.")
 
     ids = [m["id"] for m in party["members"]]
     existing = await queue.find_one({"party_id": party["party_id"], "status": "WAITING"})
-    if existing and existing["party_version"] == party["version"] and existing["mode"] == mode.upper():
+    if existing and existing["party_version"] == party["version"] and existing["mode"] == mode.upper() and existing["fill"] == fill:
         return await status(user_id)  # idempotent: same party, same snapshot, already queued
-    if existing:  # party changed or switched mode since queuing: replace the stale entry
+    if existing:  # party changed or switched mode/fill since queuing: replace the stale entry
         await queue.update_one({"_id": existing["_id"], "status": "WAITING"}, {"$set": {"status": "INVALIDATED"}})
     if await queue.find_one({"player_ids": {"$in": ids}, "status": "WAITING"}):
         raise ApiError(409, "ALREADY_QUEUED", "A party member is already in another queue.")
@@ -68,6 +70,7 @@ async def enqueue(user_id: str, mode: str) -> dict:
                 "party_version": party["version"],
                 "leader_id": party["leader_id"],
                 "mode": mode.upper(),
+                "fill": fill,
                 "players": party["members"],  # denormalized name snapshot: queue docs are short-lived
                 "player_ids": ids,
                 "size": size,
@@ -84,6 +87,14 @@ async def enqueue(user_id: str, mode: str) -> dict:
 async def cancel(user_id: str) -> None:
     """Any party member may pull the party out of the queue. Idempotent."""
     await queue.update_many({"player_ids": user_id, "status": "WAITING"}, {"$set": {"status": "CANCELLED", "ended_at": now()}})
+
+
+async def waiting() -> list[dict]:
+    """Who is searching right now. Demo bots poll this to decide when to fill in for humans."""
+    return [
+        {"party_id": e["party_id"], "player_ids": e["player_ids"], "joined_at": e["joined_at"].isoformat()}
+        async for e in queue.find({"status": "WAITING"})
+    ]
 
 
 # ─────────────── status (polled by clients) ───────────────
@@ -107,28 +118,43 @@ def match_view(m: dict, user_id: str) -> dict:
         "my_team": mine,
         "ready": m["ready"],
         "entered": m["entered"],
+        "countdown_ends_at": m["countdown_ends_at"].isoformat() if m.get("countdown_ends_at") else None,
     }
 
 
 async def status(user_id: str) -> dict:
     m = await matches.find_one(_active_match_filter(user_id), sort=[("created_at", -1)])
     if m:
-        return {"state": "entered" if user_id in m["entered"] else "found", "match": match_view(m, user_id)}
+        if m["status"] == "COUNTDOWN":
+            m = await _start_if_due(m) or m
+        # Derived from status, not `entered`: the server enters everyone at once, and a legacy
+        # IN_PROGRESS row with the user missing from `entered` used to render as a dead "found" screen.
+        state = "entered" if m["status"] == "IN_PROGRESS" else "countdown" if m["status"] == "COUNTDOWN" else "found"
+        return {"state": state, "match": match_view(m, user_id)}
 
     entry = await queue.find_one({"player_ids": user_id, "status": "WAITING"})
     if not entry:
         last = await matches.find_one({"player_ids": user_id, "status": "CANCELLED"}, sort=[("created_at", -1)])
         recent = last and now() - last["ended_at"] < timedelta(seconds=10)
-        return {"state": "idle", "notice": "Match cancelled: not every player readied up." if recent else None}
+        notice = "Match cancelled: a player left." if recent and last.get("reason") == "player_left" else "Match cancelled: not every player readied up."
+        return {"state": "idle", "notice": notice if recent else None}
 
     waiting = await queue.find({"status": "WAITING", "mode": entry["mode"]}).to_list(None)
-    team = next(t for t in pack(waiting) if any(e["queue_id"] == entry["queue_id"] for e in t))
-    # Show our own party first, then the parties we'd currently be grouped with.
-    team = [entry] + [e for e in fifo(team) if e["queue_id"] != entry["queue_id"]]
+    # The matcher may claim our entry between the two reads above. Keep it in the pool so the
+    # preview still finds our team (the next poll sees the match) instead of raising StopIteration.
+    waiting = [e for e in waiting if e["queue_id"] != entry["queue_id"]] + [entry]
+    if entry["fill"]:
+        pool = [e for e in waiting if e["fill"]]
+        team = next(t for t in pack(pool) if any(e["queue_id"] == entry["queue_id"] for e in t))
+        # Show our own party first, then the parties we'd currently be grouped with.
+        team = [entry] + [e for e in fifo(team) if e["queue_id"] != entry["queue_id"]]
+    else:
+        team = [entry]  # fill off: never grouped with anyone else while searching
     return {
         "state": "searching",
         "queue": {
             "mode": entry["mode"],
+            "fill": entry["fill"],
             "party_id": entry["party_id"],
             "leader_id": entry["leader_id"],
             "size": entry["size"],
@@ -151,33 +177,58 @@ async def _own_match(match_id: str, user_id: str) -> dict:
 
 async def ready(match_id: str, user_id: str) -> dict:
     await _own_match(match_id, user_id)
-    r = await matches.update_one({"match_id": match_id, "status": "FOUND"}, {"$addToSet": {"ready": user_id}})
-    if r.matched_count == 0:
+    before = await matches.find_one_and_update(
+        {"match_id": match_id, "status": "FOUND"}, {"$addToSet": {"ready": user_id}}, return_document=ReturnDocument.BEFORE
+    )
+    if not before:
         raise ApiError(409, "MATCH_NOT_READYABLE", "This match is no longer accepting ready checks.")
-    if r.modified_count:
+    if user_id not in before["ready"]:
         await log(match_id, "PLAYER_READY", user_id)
+    if set(before["player_ids"]) <= set(before["ready"]) | {user_id}:
+        # Conditional on FOUND: of several racing last-readiers exactly one starts the countdown.
+        go = await matches.update_one(
+            {"match_id": match_id, "status": "FOUND"}, {"$set": {"status": "COUNTDOWN", "countdown_ends_at": now() + COUNTDOWN}}
+        )
+        if go.modified_count:
+            await log(match_id, "COUNTDOWN_STARTED")
     return await status(user_id)
 
 
-async def enter(match_id: str, user_id: str) -> dict:
-    m = await _own_match(match_id, user_id)
-    if set(m["player_ids"]) - set(m["ready"]):
-        raise ApiError(409, "NOT_ALL_READY", "Waiting for every player to ready up.")
-    if m["status"] not in ACTIVE:
-        raise ApiError(409, "MATCH_CLOSED", "This match has ended.")
-    await matches.update_one({"match_id": match_id}, {"$addToSet": {"entered": user_id}, "$set": {"status": "IN_PROGRESS"}})
-    await log(match_id, "PLAYER_ENTERED", user_id)
-    return await status(user_id)
+async def _start_if_due(m: dict) -> dict | None:
+    """COUNTDOWN -> IN_PROGRESS once the deadline passed; every player is entered by the server."""
+    if m["countdown_ends_at"].replace(tzinfo=timezone.utc) > now():
+        return None
+    r = await matches.find_one_and_update(
+        {"match_id": m["match_id"], "status": "COUNTDOWN"},
+        {"$set": {"status": "IN_PROGRESS", "entered": m["player_ids"]}},
+        return_document=ReturnDocument.AFTER,
+    )
+    if r:
+        await log(m["match_id"], "MATCH_STARTED")
+    return r or await matches.find_one({"match_id": m["match_id"]})
 
 
 async def leave(match_id: str, user_id: str) -> None:
     """End-of-demo 'Return to hub'. Match completes once everyone has left."""
-    m = await _own_match(match_id, user_id)
-    await matches.update_one({"match_id": match_id}, {"$addToSet": {"left": user_id}})
+    # Add and read back in one atomic step: every concurrent leaver sees all earlier leaves, so
+    # the last one always completes the match (a separate read here left matches IN_PROGRESS).
+    # Leaving before the game starts voids the match for everyone.
+    cancelled = await matches.update_one(
+        {"match_id": match_id, "player_ids": user_id, "status": {"$in": PRE_GAME}},
+        {"$set": {"status": "CANCELLED", "ended_at": now(), "reason": "player_left"}},
+    )
+    if cancelled.modified_count:
+        await log(match_id, "MATCH_CANCELLED", user_id, reason="player_left")
+    m = await matches.find_one_and_update(
+        {"match_id": match_id, "player_ids": user_id}, {"$addToSet": {"left": user_id}}, return_document=ReturnDocument.AFTER
+    )
+    if not m:
+        raise ApiError(404, "MATCH_NOT_FOUND", "Match not found.")
     await log(match_id, "PLAYER_LEFT", user_id)
-    if set(m["player_ids"]) <= set(m.get("left", [])) | {user_id}:
-        await matches.update_one({"match_id": match_id}, {"$set": {"status": "COMPLETED", "ended_at": now()}})
-        await log(match_id, "MATCH_COMPLETED")
+    if set(m["player_ids"]) <= set(m["left"]):
+        done = await matches.update_one({"match_id": match_id, "status": {"$nin": ["COMPLETED", "CANCELLED"]}}, {"$set": {"status": "COMPLETED", "ended_at": now()}})
+        if done.modified_count:  # exactly one of the racing leavers logs it
+            await log(match_id, "MATCH_COMPLETED")
 
 
 # ─────────────── matcher ───────────────
@@ -222,6 +273,8 @@ async def tick() -> None:
         async for m in expired:
             await matches.update_one({"_id": m["_id"], "status": "FOUND"}, {"$set": {"status": "CANCELLED", "ended_at": now()}})
             await log(m["match_id"], "MATCH_CANCELLED", reason="ready_timeout")
+        async for m in matches.find({"status": "COUNTDOWN", "countdown_ends_at": {"$lte": now()}}):
+            await _start_if_due(m)
 
         waiting = await queue.find({"status": "WAITING"}).to_list(None)
         if not waiting:
@@ -233,8 +286,11 @@ async def tick() -> None:
             await queue.update_many({"party_id": {"$in": list(stale)}, "status": "WAITING"}, {"$set": {"status": "INVALIDATED"}})
             waiting = [e for e in waiting if e["party_id"] not in stale]
 
-        for mode in ("SQUAD", "RANDOM"):
-            for a, b in matchups([e for e in waiting if e["mode"] == mode]):
+        for mode in ("SQUAD",):
+            pool = [e for e in waiting if e["mode"] == mode]
+            for a, b in matchups([e for e in pool if e["fill"]]):
+                await _create_match(mode, a, b)
+            for a, b in unfilled_matchups([e for e in pool if not e["fill"]]):
                 await _create_match(mode, a, b)
 
 

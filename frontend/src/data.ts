@@ -12,11 +12,10 @@ export interface Player {
 
 export const MAX_PARTY = 4
 
-export type Mode = 'squad' | 'random'
+export type Mode = 'squad'
 
 export const MODES: { id: Mode | 'custom' | 'training'; name: string; blurb: string; locked?: boolean }[] = [
-  { id: 'squad', name: 'Squad', blurb: '4v4 · Party stays together, open slots fill from queue' },
-  { id: 'random', name: 'Random', blurb: '4v4 · Solo queue, teams assembled at random' },
+  { id: 'squad', name: 'Squad', blurb: 'Up to 4v4 · Queue with your party, fill in other players or lock your size' },
   { id: 'custom', name: 'Custom Lobby', blurb: 'Private lobbies', locked: true },
   { id: 'training', name: 'Training', blurb: 'Practice range', locked: true },
 ]

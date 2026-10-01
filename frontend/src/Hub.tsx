@@ -15,11 +15,13 @@ export interface Ctx {
   requestsOut: Player[]
   party: Party
   mode: Mode
+  fill: boolean
   activity: { id: number; text: string; t: number }[]
   isLeader: boolean
   slotsUsed: number
   setView: (v: View) => void
   setMode: (m: Mode) => void
+  setFill: (f: boolean) => void
   canInvite: (f: Player) => boolean
   inParty: (id: string) => boolean
   invite: (f: Player) => void
@@ -38,7 +40,6 @@ function blockReason(c: Ctx) {
   const leader = c.party.members.find((m) => m.id === c.party.leaderId)
   if (!c.isLeader) return `Waiting for ${leader?.name ?? 'leader'} to start the queue`
   if (c.party.pending.length) return 'Waiting on pending invites'
-  if (c.mode === 'random' && c.party.members.length > 1) return 'Random queue is solo only. Pick Squad to queue as a party'
   return null
 }
 
@@ -50,26 +51,29 @@ function MatchmakeButton(c: Ctx & { className?: string }) {
         <Icon name="bolt" className="size-5" /> Matchmake
       </button>
       <p className="mt-2 min-h-4 text-xs text-ink-400">
-        {reason ?? `Party of ${c.party.members.length} enters ${c.mode === 'squad' ? 'Squad' : 'Random'} queue together`}
+        {reason ??
+          (c.fill
+            ? `Party of ${c.party.members.length} enters queue, open slots fill from other parties`
+            : `Party of ${c.party.members.length} enters queue as-is, matched against another locked-size party`)}
       </p>
     </div>
   )
 }
 
-function ModeToggle({ mode, setMode }: Pick<Ctx, 'mode' | 'setMode'>) {
+function FillToggle({ fill, setFill }: Pick<Ctx, 'fill' | 'setFill'>) {
   return (
-    <div className="inline-grid grid-cols-2 rounded-lg border border-white/10 bg-ink-950/60 p-1" role="radiogroup" aria-label="Matchmaking mode">
-      {(['squad', 'random'] as const).map((m) => (
+    <div className="inline-grid grid-cols-2 rounded-lg border border-white/10 bg-ink-950/60 p-1" role="radiogroup" aria-label="Fill open slots">
+      {([true, false] as const).map((v) => (
         <button
-          key={m}
+          key={String(v)}
           role="radio"
-          aria-checked={mode === m}
-          onClick={() => setMode(m)}
+          aria-checked={fill === v}
+          onClick={() => setFill(v)}
           className={`rounded-md px-4 py-1.5 font-display text-xs font-semibold tracking-widest uppercase transition ${
-            mode === m ? 'bg-ink-700 text-gold' : 'text-ink-400 hover:text-ink-100'
+            fill === v ? 'bg-ink-700 text-gold' : 'text-ink-400 hover:text-ink-100'
           }`}
         >
-          {m}
+          {v ? 'Fill' : 'No fill'}
         </button>
       ))}
     </div>
@@ -230,7 +234,7 @@ function PartySlotCard({ c, s, index }: { c: Ctx; s: Slot; index: number }) {
           </>
         ) : (
           <>
-            <span className="size-1.5 rounded-full bg-online" /> {p.status === 'away' ? 'Away' : 'Ready'}
+            <span className="size-1.5 rounded-full bg-online" /> {p.status === 'away' ? 'Away' : 'Online'}
           </>
         )}
       </p>
@@ -285,8 +289,8 @@ export function Home(c: Ctx) {
           </div>
           <div className="w-full space-y-4 rounded-2xl border border-white/[0.08] bg-ink-900/80 p-4 backdrop-blur-sm lg:w-80">
             <div className="flex items-center justify-between">
-              <span className="label">Mode</span>
-              <ModeToggle mode={c.mode} setMode={c.setMode} />
+              <span className="label">Fill open slots</span>
+              <FillToggle fill={c.fill} setFill={c.setFill} />
             </div>
             <MatchmakeButton {...c} />
           </div>
@@ -350,7 +354,7 @@ export function PartyPage(c: Ctx) {
           </p>
         </div>
         <div className="flex items-center gap-3">
-          <ModeToggle mode={c.mode} setMode={c.setMode} />
+          <FillToggle fill={c.fill} setFill={c.setFill} />
         </div>
       </div>
 

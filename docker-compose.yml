@@ -64,14 +64,23 @@ services:
       mongodb: { condition: service_healthy }
       party-service: { condition: service_started }
 
+  game-service:
+    build: { context: ./services, dockerfile: game-service/Dockerfile }
+    environment:
+      <<: *service-env
+      MONGO_URL: mongodb://${MONGO_USER}:${MONGO_PASSWORD}@mongodb:27017/?authSource=admin
+      MONGO_DB: ${MONGO_DB:-warcis}
+    depends_on: { mongodb: { condition: service_healthy } }
+
   gateway:
     build: ./gateway
     environment:
       AUTH_SERVICE_URL: http://auth-service:8000
       PARTY_SERVICE_URL: http://party-service:8000
       MATCHMAKING_SERVICE_URL: http://matchmaking-service:8000
+      GAME_SERVICE_URL: http://game-service:8000
     ports: ["${GATEWAY_PORT:-8000}:8000"]
-    depends_on: [auth-service, party-service, matchmaking-service]
+    depends_on: [auth-service, party-service, matchmaking-service, game-service]
 
   frontend:
     build: ./frontend
