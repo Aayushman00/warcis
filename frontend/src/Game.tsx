@@ -537,6 +537,11 @@ export function Game({ match, me, onExit }: { match: MatchDTO; me: Player; onExi
 
   return (
     <div className="g-root" style={cssVars() as CSSProperties}>
+      {ping !== null && !hud?.ended && (
+        <span className="g-ping" title="Round-trip time to the match server" style={{ color: ping < 80 ? color.hpHigh : ping < 150 ? color.hpMid : color.hpLow }}>
+          {ping} ms
+        </span>
+      )}
       <header className="g-plate" aria-label="Match score">
         {wing('BLUE')}
         <div className="g-clock">
@@ -697,11 +702,6 @@ export function Game({ match, me, onExit }: { match: MatchDTO; me: Player; onExi
             </span>
           )}
           {!hud?.ended && <span className="g-hint">Hold TAB for stats</span>}
-          {ping !== null && !hud?.ended && (
-            <span className="g-ping" title="Round-trip time to the match server" style={{ color: ping < 80 ? color.hpHigh : ping < 150 ? color.hpMid : color.hpLow }}>
-              {ping} ms
-            </span>
-          )}
           <button className="g-icon-btn" onClick={() => (setMuted(!muted), setMutedUi(!muted))} aria-label={muted ? 'Unmute sound' : 'Mute sound'} aria-pressed={muted} title={muted ? 'Unmute' : 'Mute'}>
             <Speaker off={muted} />
           </button>
