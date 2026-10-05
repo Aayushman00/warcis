@@ -78,13 +78,16 @@ def main() -> None:
         if isinstance(waiting, ApiFail):
             time.sleep(1.5)
             continue
-        humans = {(e["party_id"], e["joined_at"]) for e in waiting if not set(e["player_ids"]) & bot_ids}
+        humans = {(e["party_id"], e["joined_at"]): e["fill"] for e in waiting if not set(e["player_ids"]) & bot_ids}
         now = time.monotonic()
         for k in humans:  # independent random 15-20 s wait per searching human party
             join_at.setdefault(k, now + random.uniform(*JOIN_DELAY_S))
-        for k in set(join_at) - humans:
+        for k in set(join_at) - humans.keys():
             del join_at[k]
         summon = any(now >= t for t in join_at.values())
+        # A no-fill human only matches another no-fill party, so then send exactly one bot group, as-is.
+        nofill = any(now >= join_at[k] and not f for k, f in humans.items())
+        sent_nofill = False
         for g in groups:
             for b in g:
                 quiet(b.call, "POST", "/users/me/heartbeat")
@@ -95,8 +98,11 @@ def main() -> None:
             if s["state"] == "searching" and not humans:  # the human gave up: don't fight other bots
                 quiet(leader.call, "DELETE", "/matchmaking/queue")
             elif s["state"] == "idle" and summon:
+                if nofill and sent_nofill:
+                    continue  # one opponent is enough; more no-fill bot groups would pair with each other
+                sent_nofill = nofill
                 form(g)
-                r = quiet(leader.call, "POST", "/matchmaking/queue", {"mode": "squad"})
+                r = quiet(leader.call, "POST", "/matchmaking/queue", {"mode": "squad", "fill": not nofill})
                 if isinstance(r, ApiFail):
                     print(f"[bots] {leader.me['name']} queue: {r}", flush=True)
             elif s["state"] in ("found", "countdown", "entered"):

@@ -92,7 +92,7 @@ async def cancel(user_id: str) -> None:
 async def waiting() -> list[dict]:
     """Who is searching right now. Demo bots poll this to decide when to fill in for humans."""
     return [
-        {"party_id": e["party_id"], "player_ids": e["player_ids"], "joined_at": e["joined_at"].isoformat()}
+        {"party_id": e["party_id"], "player_ids": e["player_ids"], "joined_at": e["joined_at"].isoformat(), "fill": e["fill"]}
         async for e in queue.find({"status": "WAITING"})
     ]
 
