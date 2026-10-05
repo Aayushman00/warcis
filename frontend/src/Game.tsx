@@ -19,10 +19,15 @@ type Hud = {
   roster: Record<Team, { id: string; alive: boolean; connected: boolean }[]>
   flags: Record<Team, FlagHud>
   ended: boolean
-  winner: Team | null
-  capturer: Who | null // the winner still holds the flag in the final snapshot
+  winner: Team | null // ended with no winner = tie
+  scores: Record<Team, number>
+  round: number
+  matchMs: number
+  intermission: { winner: Team; capturer: Who | null } | null // between rounds: sim frozen until resumesAt
+  board: Row[]
   at?: number // server time this HUD state was taken (not part of the change key)
 }
+type Row = { id: string; name: string; team: Team; captures: number; kills: number; deaths: number; rating: number; me: boolean }
 type Banner = { id: number; title: string; sub: string; team: Team }
 type Kill = { id: number; killer: Who | null; victim: Who; mine: boolean }
 
@@ -67,6 +72,8 @@ function viewSnap(s: Snapshot, w: number, v: View): Snapshot {
   return {
     ...s,
     winner: s.winner && t(s.winner),
+    roundWinner: s.roundWinner && t(s.roundWinner),
+    scores: v.swap ? { RED: s.scores.BLUE, BLUE: s.scores.RED } : s.scores,
     players: s.players.map((p) => ({ ...p, team: t(p.team), x: x(p.x) })),
     flags: s.flags.map((f) => ({ ...f, team: t(f.team), x: x(f.x) })),
     shots: s.shots.map((o) => ({ ...o, team: t(o.team), x: x(o.x) })),
@@ -92,7 +99,11 @@ function hudOf(s: Snapshot, meId: string): Hud {
     flags: { RED: flag('RED'), BLUE: flag('BLUE') },
     ended: s.state === 'ENDED',
     winner: s.winner,
-    capturer: s.winner ? who(s.players.find((p) => p.team === s.winner && p.carryingFlag)?.id ?? null) : null,
+    scores: s.scores,
+    round: s.round,
+    matchMs: s.matchMs,
+    intermission: s.resumesAt && s.roundWinner ? { winner: s.roundWinner, capturer: who(s.capturer) } : null,
+    board: s.players.map((p) => ({ id: p.id, name: p.name, team: p.team, captures: p.captures, kills: p.kills, deaths: p.deaths, rating: p.rating, me: p.id === meId })),
   }
 }
 
@@ -136,12 +147,52 @@ const Emblem = ({ letter }: { letter: string }) => (
   </svg>
 )
 
+/* Blue (always my team in this view) above red. Rank = position by the server's rating
+   (2*captures + K/D) across both teams; rows within a team are in rank order. */
+function Board({ rows, compact }: { rows: Row[]; compact?: boolean }) {
+  const order = [...rows].sort((a, b) => b.rating - a.rating)
+  const rank = new Map(order.map((r, i) => [r.id, i + 1]))
+  return (
+    <div className={`g-board ${compact ? 'is-compact' : ''}`}>
+      {(['BLUE', 'RED'] as Team[]).map((t) => (
+        <table key={t} className={`g-board-team ${tc(t)}`}>
+          <thead>
+            <tr>
+              <th className="g-b-rank">#</th>
+              <th className="g-b-name">{cap(t)}</th>
+              <th>Caps</th>
+              <th>Kills</th>
+              <th>Deaths</th>
+              <th>Score</th>
+            </tr>
+          </thead>
+          <tbody>
+            {order
+              .filter((r) => r.team === t)
+              .map((r) => (
+                <tr key={r.id} className={r.me ? 'is-me' : ''}>
+                  <td className="g-b-rank">{rank.get(r.id)}</td>
+                  <td className="g-b-name">{r.name}</td>
+                  <td>{r.captures}</td>
+                  <td>{r.kills}</td>
+                  <td>{r.deaths}</td>
+                  <td className="g-b-score">{r.rating.toFixed(2)}</td>
+                </tr>
+              ))}
+          </tbody>
+        </table>
+      ))}
+    </div>
+  )
+}
+
 /* ─────────────── component ─────────────── */
 
 export function Game({ match, me, onExit }: { match: MatchDTO; me: Player; onExit: () => void }) {
   const canvas = useRef<HTMLCanvasElement>(null)
   const clockEl = useRef<HTMLSpanElement>(null)
   const respawnEl = useRef<HTMLSpanElement>(null)
+  const resumeEl = useRef<HTMLElement>(null)
   const ringEl = useRef<SVGCircleElement>(null)
   const tl = useRef(new Timeline())
   const rend = useRef<Renderer | null>(null)
@@ -155,6 +206,7 @@ export function Game({ match, me, onExit }: { match: MatchDTO; me: Player; onExi
   const [fatal, setFatal] = useState<string | null>(null)
   const [muted, setMutedUi] = useState(isMuted)
   const [ping, setPing] = useState<number | null>(null)
+  const [showBoard, setShowBoard] = useState(false)
 
   useEffect(() => {
     unlockAudio() // the player just clicked "Enter match", so audio is allowed
@@ -238,15 +290,19 @@ export function Game({ match, me, onExit }: { match: MatchDTO; me: Player; onExi
             })
         }
       }
-      if (a.state === 'PLAYING' && b.state === 'ENDED' && b.winner) {
-        const w = b.winner
-        const base = b.flags.find((f) => f.team === w)!
+      const scored = (['RED', 'BLUE'] as Team[]).find((x) => b.scores[x] > a.scores[x])
+      if (scored) {
+        const base = b.flags.find((f) => f.team === scored)!
         r.at(t, () => {
-          r.flagEvent(base.x, base.y, w, t, true)
+          r.flagEvent(base.x, base.y, scored, t, true)
           sfx.pickup()
-          later(420, () => sfx.win(mine?.team === w))
+          later(420, () => sfx.win(mine?.team === scored))
         })
+      } else if (a.state === 'PLAYING' && b.state === 'ENDED' && b.winner) {
+        const w = b.winner // won on the clock
+        r.at(t, () => sfx.win(mine?.team === w))
       }
+      if (b.round > a.round) announce(`ROUND ${b.round}`, 'Steal the enemy flag and bring it home', mine?.team ?? 'BLUE', t)
     }
 
     const onSnapshot = (s: Snapshot) => {
@@ -302,6 +358,11 @@ export function Game({ match, me, onExit }: { match: MatchDTO; me: Player; onExi
 
     const onKey = (down: boolean) => (e: KeyboardEvent) => {
       unlockAudio()
+      if (e.code === 'Tab') {
+        e.preventDefault() // hold = scoreboard; must not move focus
+        setShowBoard(down)
+        return
+      }
       const k = KEYS[e.code]
       if (!k || held[k] === down) return
       e.preventDefault()
@@ -311,6 +372,7 @@ export function Game({ match, me, onExit }: { match: MatchDTO; me: Player; onExi
     const kd = onKey(true)
     const ku = onKey(false)
     const blur = () => {
+      setShowBoard(false)
       held.up = held.down = held.left = held.right = false
       sendInput()
     }
@@ -384,7 +446,8 @@ export function Game({ match, me, onExit }: { match: MatchDTO; me: Player; onExi
       const s = tl.current.latest()
       if (!s) return
       const t = tl.current.renderTime()
-      if (clockEl.current) clockEl.current.textContent = clock(s.state === 'ENDED' ? s.elapsed : s.elapsed - (s.now - t))
+      if (clockEl.current) clockEl.current.textContent = clock(s.matchMs - (s.state === 'ENDED' ? s.elapsed : s.elapsed - (s.now - t)))
+      if (s.resumesAt && resumeEl.current) resumeEl.current.textContent = String(Math.max(1, Math.ceil((s.resumesAt - t) / 1000)))
       const mine = s.players.find((p) => p.id === me.id)
       if (mine?.respawnAt) {
         const left = Math.max(0, mine.respawnAt - t)
@@ -404,11 +467,11 @@ export function Game({ match, me, onExit }: { match: MatchDTO; me: Player; onExi
 
   const mine = hud?.me ?? null
   const myTeam = mine?.team ?? null
-  const score = { RED: hud?.winner === 'RED' ? 1 : 0, BLUE: hud?.winner === 'BLUE' ? 1 : 0 }
+  const score = hud?.scores ?? { RED: 0, BLUE: 0 }
   const now = hud?.at ?? 0
 
   const objective = (() => {
-    if (!hud || !mine || hud.ended || !mine.alive) return null
+    if (!hud || !mine || hud.ended || hud.intermission || !mine.alive) return null
     const own = hud.flags[mine.team]
     const theirs = hud.flags[other(mine.team)]
     if (mine.carrying)
@@ -477,7 +540,8 @@ export function Game({ match, me, onExit }: { match: MatchDTO; me: Player; onExi
       <header className="g-plate" aria-label="Match score">
         {wing('BLUE')}
         <div className="g-clock">
-          <span ref={clockEl}>00:00</span>
+          <span ref={clockEl}>10:00</span>
+          {hud && !hud.ended && <small className="g-round-tag">ROUND {hud.round}</small>}
         </div>
         {wing('RED')}
       </header>
@@ -522,7 +586,25 @@ export function Game({ match, me, onExit }: { match: MatchDTO; me: Player; onExi
               </div>
             )}
 
-            {mine && !mine.alive && !hud?.ended && (
+            {hud?.intermission && !hud.ended && (
+              <div className={`g-layer g-round ${tc(hud.intermission.winner)}`} role="status">
+                <div className="g-round-card">
+                  <span className="g-round-title">{cap(hud.intermission.winner)} SCORES</span>
+                  {hud.intermission.capturer && <span className="g-round-sub">{hud.intermission.capturer.name} captured the flag</span>}
+                  <span className="g-round-sub">
+                    Round {hud.round + 1} in <b ref={resumeEl}>4</b>
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {showBoard && !hud?.ended && hud && (
+              <div className="g-layer g-boardlayer">
+                <Board rows={hud.board} />
+              </div>
+            )}
+
+            {mine && !mine.alive && !hud?.ended && !hud?.intermission && (
               <div className={`g-layer g-death ${mine.killer ? tc(mine.killer.team) : ''}`}>
                 <div className="g-death-card">
                   <span className="g-death-title">ELIMINATED</span>
@@ -546,12 +628,12 @@ export function Game({ match, me, onExit }: { match: MatchDTO; me: Player; onExi
             {(hud?.ended || fatal) && (
               <div className={`g-layer g-result ${hud?.winner ? tc(hud.winner) : ''}`}>
                 <div className="g-result-band" role="dialog" aria-label="Match result">
-                  {hud?.winner ? (
+                  {hud && !fatal ? (
                     <>
-                      <span className="g-result-kicker">
-                        {won === null ? 'Flag captured' : won ? `${cap(hud.winner)} captured the ${other(hud.winner).toLowerCase()} flag` : `${cap(hud.winner)} captured your flag`}
+                      <span className="g-result-kicker">{hud.winner ? 'Match over' : 'Time is up, scores are level'}</span>
+                      <span className={`g-result-title ${won !== true && won !== null ? 'is-defeat' : ''} ${hud.winner ? '' : 'is-defeat'}`}>
+                        {!hud.winner ? 'TIE' : won === null ? `${hud.winner} WINS` : won ? 'VICTORY' : 'DEFEAT'}
                       </span>
-                      <span className={`g-result-title ${won === false ? 'is-defeat' : ''}`}>{won === null ? `${hud.winner} WINS` : won ? 'VICTORY' : 'DEFEAT'}</span>
                       <span className="g-result-score" aria-label={`Blue ${score.BLUE}, Red ${score.RED}`}>
                         <em className="g-blue">BLUE</em>
                         <span className="g-blue">{score.BLUE}</span>
@@ -559,7 +641,7 @@ export function Game({ match, me, onExit }: { match: MatchDTO; me: Player; onExi
                         <span className="g-red">{score.RED}</span>
                         <em className="g-red">RED</em>
                       </span>
-                      {hud.capturer && <span className="g-result-by">Capture by {hud.capturer.name}</span>}
+                      <Board rows={hud.board} compact />
                     </>
                   ) : (
                     <>
@@ -614,6 +696,7 @@ export function Game({ match, me, onExit }: { match: MatchDTO; me: Player; onExi
               {other(mine.team)} FLAG
             </span>
           )}
+          {!hud?.ended && <span className="g-hint">Hold TAB for stats</span>}
           {ping !== null && !hud?.ended && (
             <span className="g-ping" title="Round-trip time to the match server" style={{ color: ping < 80 ? color.hpHigh : ping < 150 ? color.hpMid : color.hpLow }}>
               {ping} ms

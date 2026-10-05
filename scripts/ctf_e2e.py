@@ -179,12 +179,9 @@ async def play(mid: str, red: list[Client], blue: list[Client]) -> None:
         await runner.until(lambda st: runner.flag("BLUE")["carrierId"] == runner.id)
         await runner.walk(list(reversed(LANE))[1:-1] + [RED_BASE])
         for s in seats:
-            await s.until(lambda st: st["state"] == "ENDED")
-            assert s.s["winner"] == "RED"
-        print(f"  capture -> RED TEAM WINS on all {2 * n} clients")
-
-        await R[0].send(t="input", up=True)
-        await R[0].send(t="fire", x=0, y=0)
+            await s.until(lambda st: st["scores"]["RED"] == 1)
+            assert s.s["state"] == "PLAYING" and s.s["scores"]["BLUE"] == 0 and s.s["roundWinner"] == "RED"
+        print(f"  capture -> RED scores round 1 (match continues) on all {2 * n} clients")
     finally:
         for p in pumps:
             p.cancel()
@@ -239,9 +236,9 @@ async def recovery(mid: str, red: list[Client], blue: list[Client]) -> None:
     assert R.flag("BLUE")["carrierId"] == R.id and after["elapsed"] >= before["elapsed"]
     print(f"  restored: carrier + positions + HP (blue at {B.me()['hp']} HP), clock {before['elapsed'] // 1000}s -> {after['elapsed'] // 1000}s")
     await R.walk(list(reversed(LANE))[1:-1] + [RED_BASE])
-    await B.until(lambda st: st["state"] == "ENDED")
-    assert B.s["winner"] == "RED"
-    print("  match continued to capture after restart")
+    await B.until(lambda st: st["scores"]["RED"] == 1)
+    assert B.s["state"] == "PLAYING"
+    print("  match continued to a capture after restart")
     for p in pumps:
         p.cancel()
     for x in both:
@@ -257,7 +254,7 @@ def run_recovery() -> None:
     print("RECOVERY E2E PASSED")
 
 
-def run_bots(max_s: float = 420) -> None:
+def run_bots(max_s: float = 660) -> None:
     """One passive human in a 4v4 with the 7 demo bots: bots must move, fight, take flags,
     survive a game-service restart (reconnect on their own) and finish the match."""
     human = Client().register(f"ctfh{uuid.uuid4().hex[:5]}", "password123")

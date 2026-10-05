@@ -12,8 +12,9 @@ The server simulates at TICK_HZ and broadcasts {"t": "state", ...} to every clie
 
 Persistence: the simulation lives in RAM. Every CHECKPOINT_MS a small snapshot goes to
 MongoDB `game_checkpoints` (one doc per match). On startup, recent PLAYING checkpoints of
-IN_PROGRESS matches are restored and players reconnect into them. On capture the server
-writes `result` onto the match and logs MATCH_ENDED; the match itself is still closed by
+IN_PROGRESS matches are restored and players reconnect into them. A capture scores a
+round; first to 3, or the higher score at 10:00 (equal = TIE), ends the match. The server
+writes `result` (winner, scores, per-player stats) onto the match and logs MATCH_ENDED; the match itself is still closed by
 matchmaking's existing /leave flow ("Return to hub").
 """
 
@@ -29,7 +30,7 @@ from pymongo import AsyncMongoClient
 from warcis_common.errors import ApiError
 from warcis_common.security import decode_token
 
-from app.sim import MAP, TEAMS, Game
+from app.sim import MAP, TEAMS, Game, rating
 
 TICK_HZ = 30
 CHECKPOINT_MS = 3000
@@ -90,7 +91,8 @@ async def open_room(match_id: str, user_id: str) -> Room:
         if not m:
             raise ApiError(404, "MATCH_NOT_FOUND", "Match not found.")
         if m.get("result"):
-            raise ApiError(409, "MATCH_ENDED", f"{m['result']['winner']} TEAM WINS")
+            w = m["result"]["winner"]
+            raise ApiError(409, "MATCH_ENDED", "TIE" if w == "TIE" else f"{w} TEAM WINS")
         if m["status"] != "IN_PROGRESS":
             raise ApiError(409, "MATCH_NOT_STARTED", "Match is not in progress.")
         cp = await checkpoints.find_one({"match_id": match_id})
@@ -171,13 +173,16 @@ async def run(room: Room) -> None:
 
 async def _record_result(room: Room) -> None:
     g = room.game
-    winner = TEAMS[g.winner]
+    winner = TEAMS[g.winner] if g.winner is not None else "TIE"
+    scores = {TEAMS[t]: g.scores[t] for t in (0, 1)}
+    stats = [{"id": p.id, "team": TEAMS[p.team], "captures": p.captures, "kills": p.kills, "deaths": p.deaths, "rating": rating(p)} for p in g.players.values()]
     try:
         await matches.update_one(
-            {"match_id": room.match_id}, {"$set": {"result": {"winner": winner, "capturer": g.capturer, "at": datetime.now(timezone.utc)}}}
+            {"match_id": room.match_id},
+            {"$set": {"result": {"winner": winner, "scores": scores, "stats": stats, "capturer": g.capturer, "at": datetime.now(timezone.utc)}}},
         )
         await events.insert_one(
-            {"match_id": room.match_id, "type": "MATCH_ENDED", "user_id": g.capturer, "at": datetime.now(timezone.utc), "data": {"winner": winner}}
+            {"match_id": room.match_id, "type": "MATCH_ENDED", "user_id": g.capturer, "at": datetime.now(timezone.utc), "data": {"winner": winner, "scores": scores}}
         )
     except Exception as e:  # the result was already broadcast; don't kill the room over a DB write
         log(f"could not record result for {room.match_id}: {e!r}")

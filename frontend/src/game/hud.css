@@ -326,3 +326,30 @@
      static instead; React unmounts them on the same timers. */
   .g-live-dot, .g-feed-row, .g-banner, .g-count, .g-go, .g-result-band, .g-result-band > * { animation: none !important; }
 }
+
+/* ─────────────── rounds + stats ─────────────── */
+
+.g-round-tag { font-size: 11px; font-weight: 600; letter-spacing: 0.14em; color: var(--g-dim); line-height: 1; margin-top: -6px; padding-bottom: 4px; }
+.g-clock { grid-auto-flow: row; align-content: center; }
+.g-hint { font-size: 12px; color: var(--g-dim); }
+
+.g-round { display: grid; place-items: center; background: color-mix(in srgb, var(--g-void) 45%, transparent); animation: g-fade var(--g-t-slow) var(--g-t-ease); }
+.g-round-card { display: flex; flex-direction: column; align-items: center; gap: var(--g-s2); }
+.g-round-title { font-family: var(--g-font-display); font-weight: 800; font-size: clamp(40px, 6vw, 80px); letter-spacing: 0.06em; color: var(--tc-light); text-shadow: 0 0 40px color-mix(in srgb, var(--tc) 45%, transparent); }
+.g-round-sub { font-size: 15px; font-weight: 600; color: var(--g-ink); }
+.g-round-sub b { font-family: var(--g-font-display); font-variant-numeric: tabular-nums; }
+
+.g-boardlayer { display: grid; place-items: center; background: color-mix(in srgb, var(--g-void) 55%, transparent); pointer-events: none; }
+.g-board { display: flex; flex-direction: column; gap: var(--g-s3); width: min(640px, 92%); padding: var(--g-s4); background: color-mix(in srgb, var(--g-void) 85%, transparent); border: 1px solid var(--g-rule-strong); }
+.g-board-team { width: 100%; border-collapse: collapse; font-size: 14px; font-variant-numeric: tabular-nums; }
+.g-board-team th { font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--g-dim); font-weight: 600; text-align: right; padding: 4px 8px; border-bottom: 2px solid var(--tc); }
+.g-board-team th.g-b-name { color: var(--tc-light); }
+.g-board-team td { text-align: right; padding: 4px 8px; border-bottom: 1px solid var(--g-rule); color: var(--g-ink); }
+.g-board-team .g-b-rank { width: 36px; text-align: left; color: var(--g-dim); }
+.g-board-team .g-b-name { text-align: left; }
+.g-board-team .g-b-score { font-weight: 700; color: var(--tc-light); }
+.g-board-team tr.is-me td { background: color-mix(in srgb, var(--tc) 16%, transparent); }
+.g-board.is-compact { gap: var(--g-s2); padding: var(--g-s2) var(--g-s3); font-size: 13px; }
+.g-board.is-compact .g-board-team { font-size: 13px; }
+.g-board.is-compact .g-board-team td, .g-board.is-compact .g-board-team th { padding: 2px 8px; }
+.g-result { overflow: auto; }

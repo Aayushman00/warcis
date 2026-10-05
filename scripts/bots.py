@@ -138,7 +138,7 @@ def play_match(token: str, name: str, match_id: str) -> None:
                     if msg["t"] != "state":
                         continue
                     if msg["state"] == "ENDED":
-                        print(f"[bots] {name}: {msg['winner']} TEAM WINS", flush=True)
+                        print(f"[bots] {name}: {msg['winner'] + ' TEAM WINS' if msg['winner'] else 'TIE'}", flush=True)
                         time.sleep(3)  # let humans read the end screen before the match empties
                         break
                     now = time.monotonic()
