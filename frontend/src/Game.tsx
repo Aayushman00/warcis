@@ -5,6 +5,7 @@ import './game/hud.css'
 import { Renderer, Timeline, type GMap, type Snapshot } from './game/render'
 import { isMuted, setMuted, sfx, unlockAudio } from './game/sfx'
 import { color, cssVars, other, type Team } from './game/tokens'
+import { Scoreboard, type ScoreRow } from './Scoreboard'
 
 /* In-match client. The server (services/game-service) is authoritative: this component
    sends intents (held keys, aim point), renders interpolated snapshots on the canvas, and
@@ -21,6 +22,7 @@ type Hud = {
   ended: boolean
   winner: Team | null
   capturer: Who | null // the winner still holds the flag in the final snapshot
+  rows: ScoreRow[] // kills / deaths / captures of everyone, live
   at?: number // server time this HUD state was taken (not part of the change key)
 }
 type Banner = { id: number; title: string; sub: string; team: Team }
@@ -93,6 +95,7 @@ function hudOf(s: Snapshot, meId: string): Hud {
     ended: s.state === 'ENDED',
     winner: s.winner,
     capturer: s.winner ? who(s.players.find((p) => p.team === s.winner && p.carryingFlag)?.id ?? null) : null,
+    rows: s.players.map((p) => ({ id: p.id, name: p.name, team: p.team, kills: p.kills, deaths: p.deaths, captures: p.captures })),
   }
 }
 
@@ -138,7 +141,14 @@ const Emblem = ({ letter }: { letter: string }) => (
 
 /* ─────────────── component ─────────────── */
 
-export function Game({ match, me, onExit }: { match: MatchDTO; me: Player; onExit: () => void }) {
+/** Play again, offered on the end screen: only the party leader can put the party back in the queue. */
+export interface Rematch {
+  canQueue: boolean
+  leaderName: string | null
+  onQueue: () => void
+}
+
+export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Player; onExit: () => void; rematch?: Rematch }) {
   const canvas = useRef<HTMLCanvasElement>(null)
   const clockEl = useRef<HTMLSpanElement>(null)
   const respawnEl = useRef<HTMLSpanElement>(null)
@@ -404,7 +414,19 @@ export function Game({ match, me, onExit }: { match: MatchDTO; me: Player; onExi
 
   const mine = hud?.me ?? null
   const myTeam = mine?.team ?? null
-  const score = { RED: hud?.winner === 'RED' ? 1 : 0, BLUE: hud?.winner === 'BLUE' ? 1 : 0 }
+  // The final result: the live snapshot while the room is open, else the stored one (a reconnect
+  // after the room unloaded gets an error from the server, but the match document has the result).
+  const final = (() => {
+    if (hud?.ended && hud.winner) return { winner: hud.winner, capturer: hud.capturer, rows: hud.rows }
+    const r = match.result
+    if (!r) return null
+    const v = viewOf(match.my_team)
+    const vt = (t: Team): Team => (v.swap ? other(t) : t)
+    const rows = r.players.map((p) => ({ id: p.id, name: p.name, team: vt(p.team), kills: p.kills, deaths: p.deaths, captures: p.captures }))
+    const cap = rows.find((p) => p.id === r.capturer)
+    return { winner: vt(r.winner), capturer: cap ? { name: cap.name, team: cap.team } : null, rows }
+  })()
+  const score = { RED: final?.winner === 'RED' ? 1 : 0, BLUE: final?.winner === 'BLUE' ? 1 : 0 }
   const now = hud?.at ?? 0
 
   const objective = (() => {
@@ -468,7 +490,7 @@ export function Game({ match, me, onExit }: { match: MatchDTO; me: Player; onExi
     )
   }
 
-  const won = hud?.winner && myTeam ? hud.winner === myTeam : null
+  const won = final ? final.winner === (myTeam ?? 'BLUE') : null // everyone is shown as BLUE (see viewOf)
   const carrying = !!mine?.carrying && !hud?.ended
   const hpColor = !mine ? color.hpHigh : mine.hp > 50 ? color.hpHigh : mine.hp > 25 ? color.hpMid : color.hpLow
 
@@ -544,14 +566,14 @@ export function Game({ match, me, onExit }: { match: MatchDTO; me: Player; onExi
             )}
 
             {(hud?.ended || fatal) && (
-              <div className={`g-layer g-result ${hud?.winner ? tc(hud.winner) : ''}`}>
-                <div className="g-result-band" role="dialog" aria-label="Match result">
-                  {hud?.winner ? (
+              <div className={`g-layer g-result ${final ? tc(final.winner) : ''}`}>
+                <div className={`g-result-band ${final ? 'has-board' : ''}`} role="dialog" aria-label="Match result">
+                  {final ? (
                     <>
                       <span className="g-result-kicker">
-                        {won === null ? 'Flag captured' : won ? `${cap(hud.winner)} captured the ${other(hud.winner).toLowerCase()} flag` : `${cap(hud.winner)} captured your flag`}
+                        {won ? `${cap(final.winner)} captured the ${other(final.winner).toLowerCase()} flag` : `${cap(final.winner)} captured your flag`}
                       </span>
-                      <span className={`g-result-title ${won === false ? 'is-defeat' : ''}`}>{won === null ? `${hud.winner} WINS` : won ? 'VICTORY' : 'DEFEAT'}</span>
+                      <span className={`g-result-title ${won === false ? 'is-defeat' : ''}`}>{won ? 'VICTORY' : 'DEFEAT'}</span>
                       <span className="g-result-score" aria-label={`Blue ${score.BLUE}, Red ${score.RED}`}>
                         <em className="g-blue">BLUE</em>
                         <span className="g-blue">{score.BLUE}</span>
@@ -559,7 +581,10 @@ export function Game({ match, me, onExit }: { match: MatchDTO; me: Player; onExi
                         <span className="g-red">{score.RED}</span>
                         <em className="g-red">RED</em>
                       </span>
-                      {hud.capturer && <span className="g-result-by">Capture by {hud.capturer.name}</span>}
+                      {final.capturer && <span className="g-result-by">Capture by {final.capturer.name}</span>}
+                      <div className="g-result-board">
+                        <Scoreboard rows={final.rows} meId={me.id} myTeam={myTeam ?? 'BLUE'} />
+                      </div>
                     </>
                   ) : (
                     <>
@@ -569,9 +594,19 @@ export function Game({ match, me, onExit }: { match: MatchDTO; me: Player; onExi
                       <span className="g-result-kicker">{fatal}</span>
                     </>
                   )}
-                  <button onClick={onExit} className={`g-btn ${myTeam ? tc(myTeam) : ''}`} autoFocus>
-                    RETURN TO HUB
-                  </button>
+                  <div className="g-result-actions">
+                    {final && rematch?.canQueue && (
+                      <button onClick={rematch.onQueue} className={`g-btn ${myTeam ? tc(myTeam) : ''}`} autoFocus>
+                        PLAY AGAIN
+                      </button>
+                    )}
+                    <button onClick={onExit} className={`g-btn ${final && rematch?.canQueue ? 'is-ghost' : ''} ${myTeam ? tc(myTeam) : ''}`} autoFocus={!(final && rematch?.canQueue)}>
+                      RETURN TO HUB
+                    </button>
+                  </div>
+                  {final && rematch && !rematch.canQueue && (
+                    <span className="g-result-by">{rematch.leaderName ? `${rematch.leaderName} can queue the party again` : 'Only the party leader can queue again'}</span>
+                  )}
                 </div>
               </div>
             )}

@@ -13,7 +13,8 @@ The server simulates at TICK_HZ and broadcasts {"t": "state", ...} to every clie
 Persistence: the simulation lives in RAM. Every CHECKPOINT_MS a small snapshot goes to
 MongoDB `game_checkpoints` (one doc per match). On startup, recent PLAYING checkpoints of
 IN_PROGRESS matches are restored and players reconnect into them. On capture the server
-writes `result` onto the match and logs MATCH_ENDED; the match itself is still closed by
+writes `result` (winner plus per-player kills / deaths / captures) onto the match and logs
+MATCH_ENDED and one PLAYER_RESULT per player; the match itself is still closed by
 matchmaking's existing /leave flow ("Return to hub").
 """
 
@@ -35,6 +36,7 @@ TICK_HZ = 30
 CHECKPOINT_MS = 3000
 RECOVER_WINDOW_S = 600  # on startup, only checkpoints newer than this are restored
 KEEP_ENDED_S = 60  # keep a finished room so late reconnects still see the result screen
+RESULT_ATTEMPTS = 4  # writes of the final result before giving up (the room stays loaded meanwhile)
 IDLE_DROP_S = 120  # nobody connected this long -> checkpoint and unload the room
 
 client = AsyncMongoClient(os.environ["MONGO_URL"], tz_aware=True)
@@ -170,17 +172,29 @@ async def run(room: Room) -> None:
 
 
 async def _record_result(room: Room) -> None:
+    """Write the final per-player result onto the match document and into match_events.
+
+    `result` is set once (the `$exists: False` guard): the match document is what history and
+    profile stats are computed from, the events are the append-only audit trail of the same fact.
+    """
     g = room.game
-    winner = TEAMS[g.winner]
-    try:
-        await matches.update_one(
-            {"match_id": room.match_id}, {"$set": {"result": {"winner": winner, "capturer": g.capturer, "at": datetime.now(timezone.utc)}}}
-        )
-        await events.insert_one(
-            {"match_id": room.match_id, "type": "MATCH_ENDED", "user_id": g.capturer, "at": datetime.now(timezone.utc), "data": {"winner": winner}}
-        )
-    except Exception as e:  # the result was already broadcast; don't kill the room over a DB write
-        log(f"could not record result for {room.match_id}: {e!r}")
+    result = {**g.result(g.last), "at": datetime.now(timezone.utc)}  # g.last = the capture tick, not when the write happens
+    for attempt in range(1, RESULT_ATTEMPTS + 1):
+        try:
+            done = await matches.update_one({"match_id": room.match_id, "result": {"$exists": False}}, {"$set": {"result": result}})
+            if done.modified_count:
+                at = result["at"]
+                await events.insert_many(
+                    [{"match_id": room.match_id, "type": "MATCH_ENDED", "user_id": g.capturer, "at": at,
+                      "data": {"winner": result["winner"], "duration_ms": result["duration_ms"]}}]
+                    + [{"match_id": room.match_id, "type": "PLAYER_RESULT", "user_id": p["id"], "at": at,
+                        "data": {k: p[k] for k in ("team", "outcome", "kills", "deaths", "captures")}}
+                       for p in result["players"]]
+                )
+            return
+        except Exception as e:  # the result was already broadcast; retry briefly, never kill the room over a DB write
+            log(f"could not record result for {room.match_id} (attempt {attempt}): {e!r}")
+            await asyncio.sleep(attempt)
 
 
 @asynccontextmanager

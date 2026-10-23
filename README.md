@@ -7,7 +7,7 @@ that use two different databases, **PostgreSQL** for relational social state and
 **MongoDB** for matchmaking and match documents.
 
 ```
-SIGN IN → HOME → FRIENDS → PARTY (1–4) → MATCHMAKING → MATCH FOUND → ENTER MATCH → end of demo
+SIGN IN → HOME → FRIENDS → PARTY (1–4) → MATCHMAKING → MATCH FOUND → PLAY → SCOREBOARD → PLAY AGAIN / PROFILE
 ```
 
 Entering a match drops every player into a small **Capture The Flag** game (1v1, 2v2 or 4v4)
@@ -111,8 +111,11 @@ refresh keeps you signed in.
    *"Waiting for Astra to start the queue"* (the server also returns `403 NOT_LEADER`).
 7. **Tab A**: **MATCHMAKE**. The queue entry goes into MongoDB. Your party of 2 plus the bots fill two
    teams and **MATCH FOUND** appears in both tabs with real teams and party grouping.
-8. Ready checks tick in from the server. Click **ENTER MATCH**. This is the end of the demo.
-9. Refresh either tab. You are still signed in and still in the same match or party.
+8. Ready checks tick in from the server and the match starts. Play until a flag is captured.
+9. The end screen shows the scoreboard. The party leader clicks **PLAY AGAIN** to requeue the same party,
+   or anyone clicks **RETURN TO HUB**. Open **Profile** for career stats and match history; friends show
+   their record (`3W–1L · 1.25 K/D`) in the friends list.
+10. Refresh either tab. You are still signed in and still in the same match or party.
 
 Inspect the data while you go:
 
@@ -129,6 +132,7 @@ Automated rule check (stop the bots first so the queue is empty):
 docker compose stop bots
 pip install httpx && python scripts/e2e.py         # → ALL E2E CHECKS PASSED
 cd services/matchmaking-service && python -m app.services.packing   # → packing ok
+cd services/matchmaking-service && python -m app.services.stats     # → stats ok
 ```
 
 ---
@@ -146,8 +150,12 @@ cd services/matchmaking-service && python -m app.services.packing   # → packin
 - Server decides movement, wall collision, projectiles (25 dmg, 500 ms cooldown), death, 3 s respawn,
   flag pickup / drop on death / return by own team / auto-return after 10 s, and capture.
 - **Capture** only counts while your own flag is `AT_BASE`. The first capture ends the match: the server
-  writes `result: {winner, capturer}` onto the match and logs `MATCH_ENDED`. "Return to hub" uses the
-  existing `/matchmaking/matches/{id}/leave`, which completes the match.
+  writes the result onto the match (see [Results, history and stats](#results-history-and-stats)) and logs
+  `MATCH_ENDED`. "Return to hub" uses the existing `/matchmaking/matches/{id}/leave`, which completes the match.
+- **Stats:** the sim counts each player's `kills` (a hit that drops an enemy to 0 HP), `deaths` and flag
+  `captures`. They ride along in every snapshot and in the 3 s checkpoints, so a restart keeps them.
+- **End screen:** a scoreboard (your team, opponents; captures, kills, deaths) and **PLAY AGAIN** (party leader)
+  or **RETURN TO HUB**. A party member who is not the leader sees who can queue again.
 
 - **Client** (`frontend/src/Game.tsx`, `src/game/`) renders ~100 ms behind the server and interpolates
   between snapshots (no prediction: the server stays the only authority). Events such as flag stolen,
@@ -165,7 +173,8 @@ cd services/matchmaking-service && python -m app.services.packing   # → packin
 Full-stack checks (`pip install httpx websockets`):
 
 ```bash
-python scripts/ctf_e2e.py 1 2 4          # bots stopped: real 1v1/2v2/4v4, one socket per player
+python scripts/ctf_e2e.py 1 2 4          # bots stopped: real 1v1/2v2/4v4, one socket per player; also checks the stored
+                                         # result, history, career stats and play-again requeue
 python scripts/ctf_e2e.py recovery       # restart game-service mid-match, state is restored
 CTF_CRASH=1 python scripts/ctf_e2e.py recovery   # same with SIGKILL (periodic checkpoint only)
 python scripts/ctf_e2e.py bots           # bots running: 1 human + 7 bots, restart mid-match
@@ -199,9 +208,11 @@ All routes are behind the gateway at `/api`. Errors always have the shape
 | DELETE | `/social/party/members/{user_id}` | Kick (leader only). |
 | GET | `/social/invitations` | Invitations sent to you. |
 | POST | `/social/invitations/{id}/accept` · `/decline` | Accepting leaves your old party in the same transaction. |
-| POST / DELETE | `/matchmaking/queue` | POST `{mode: squad, fill: bool}` (leader only, idempotent). DELETE (any member, idempotent). |
+| POST / DELETE | `/matchmaking/queue` | POST `{mode: squad, fill: bool}` (leader only, idempotent). DELETE (any member, idempotent). Queueing again from a finished match is the rematch: it also moves the whole party out of that match. |
 | GET | `/matchmaking/status` | `idle` · `searching` (with live team formation) · `found` · `entered` |
 | POST | `/matchmaking/matches/{id}/ready` · `/enter` · `/leave` | Ready check → enter (needs all ready) → back to hub. |
+| GET | `/matchmaking/stats?ids=a,b,…` | Career `matches, wins, losses, kills, deaths, captures, kd, win_rate` per user id (max 50). Any signed-in user can read any player's stats. |
+| GET | `/matchmaking/history?limit=&before=` | Your finished matches, newest first, each with the full scoreboard. Page with `next_before`. |
 
 Status codes: `400` invalid request · `401` bad or missing JWT · `403` not allowed (not leader,
 not friends) · `404` not found · `409` conflicting state (full, already queued, pending
@@ -274,10 +285,38 @@ Party tables reference `auth.users` by foreign key and store **no copies** of us
   teams: [ { players: [{id,name,tag}], parties: [{party_id, players: [ids]}] }, {...} ],
   player_ids, ready: [ids], entered: [ids], left: [ids], created_at, ended_at? }
 
+// once the game is over, game-service adds (exactly once) to the same document:
+//   result: { winner: "RED"|"BLUE", capturer: user_id, duration_ms, at,
+//             players: [{ id, name, team, outcome: "WIN"|"LOSS", kills, deaths, captures }] }
+
 // match_events: append-only log, ready for future gameplay events
-{ match_id, type: "MATCH_CREATED"|"PLAYER_READY"|"PLAYER_ENTERED"|"PLAYER_LEFT"|"MATCH_COMPLETED"|"MATCH_CANCELLED",
+{ match_id, type: "MATCH_CREATED"|"PLAYER_READY"|"PLAYER_ENTERED"|"PLAYER_LEFT"|"MATCH_COMPLETED"|"MATCH_CANCELLED"
+         |"MATCH_ENDED"|"PLAYER_RESULT",
   user_id?, at, data }
+// MATCH_ENDED: {winner, duration_ms}; PLAYER_RESULT (one per player): {team, outcome, kills, deaths, captures}
 ```
+
+### Results, history and stats
+
+When the game ends, game-service writes `result` onto the match document (guarded by `result: {$exists: false}`
+so it is set once) and appends `MATCH_ENDED` plus one `PLAYER_RESULT` event per player. Everything the player
+sees afterwards is derived from that one document:
+
+- **Scoreboard** at the end of a match comes from the live snapshot. If you reconnect after the room has been
+  unloaded, the stored `result` (also returned in the match view) fills it in.
+- **History** (`/matchmaking/history`) is a keyset-paged query over `matches` where `result` exists.
+- **Profile and friends-list stats** (`/matchmaking/stats`) are a MongoDB aggregation over the same documents
+  (`$unwind result.players`, `$group` by player). Nothing is stored twice, so a stat cannot drift from the
+  matches it was computed from. Cancelled and abandoned matches have no `result` and do not count.
+
+This is a deliberate use of the two stores: the per-match scoreboard is a nested document that is always read
+whole, which MongoDB stores as one document with no joins. User identity (names, friends) stays in PostgreSQL
+and is only joined in the UI by id.
+
+**Play again.** The end screen's button calls the ordinary `POST /matchmaking/queue` as the party leader.
+`enqueue` first marks the whole party as having left their finished match (the same state "Return to hub"
+sets), then queues the party as it is now. Teammates still looking at the scoreboard are moved to the new
+search by their next status poll. A match that is still being played keeps blocking `enqueue` (`IN_MATCH`).
 
 ### Matching algorithm (`matchmaking-service/app/services/packing.py`)
 
@@ -361,3 +400,6 @@ unique constraints are the backstop if application code ever forgets a check.
   conditional, but running several replicas would also need a leader lock.
 - No MMR, region or latency in matchmaking. The region label in the UI is cosmetic.
 - The activity feed on the home screen is per client and not persisted.
+- Stats count finished matches only and are recomputed on every request (an indexed aggregation). If the
+  match collection grows large, keep running totals per player in a `player_stats` collection, updated when
+  the result is written.

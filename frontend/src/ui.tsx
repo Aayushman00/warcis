@@ -107,6 +107,9 @@ const ICONS = {
   send: 'M4 12l16-8-6 16-2.5-6.5z',
   bell: 'M6 16V11a6 6 0 0112 0v5l2 2H4zM10 21h4',
   bolt: 'M13 2L4 14h7l-1 8 9-12h-7z',
+  chart: 'M5 20V11M12 20V4M19 20v-6',
+  chevron: 'M9 6l6 6-6 6',
+  refresh: 'M20 11a8 8 0 00-14.5-4M4 4v4h4M4 13a8 8 0 0014.5 4M20 20v-4h-4',
 } as const
 
 export type IconName = keyof typeof ICONS

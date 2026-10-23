@@ -88,6 +88,47 @@ export interface SocialState {
 }
 
 export type QPlayer = { id: string; name: string; tag: string }
+export type TeamName = 'RED' | 'BLUE'
+/** One player's line in a finished match (written by game-service, stored on the match document). */
+export interface PlayerResult {
+  id: string
+  name: string
+  team: TeamName
+  outcome: 'WIN' | 'LOSS'
+  kills: number
+  deaths: number
+  captures: number
+}
+export interface MatchResult {
+  winner: TeamName
+  capturer: string | null
+  duration_ms: number
+  ended_at: string | null
+  players: PlayerResult[]
+}
+export interface HistoryItem extends MatchResult {
+  match_id: string
+  mode: string
+  played_at: string
+  outcome: 'WIN' | 'LOSS'
+  my_team: TeamName
+  me: { kills: number; deaths: number; captures: number }
+}
+export interface HistoryPage {
+  items: HistoryItem[]
+  next_before: string | null
+}
+/** Career totals, aggregated from finished matches by matchmaking-service. */
+export interface PlayerStats {
+  matches: number
+  wins: number
+  losses: number
+  kills: number
+  deaths: number
+  captures: number
+  kd: number
+  win_rate: number | null
+}
 export interface TeamDTO {
   players: QPlayer[]
   parties: { party_id: string; players: string[] }[]
@@ -102,6 +143,7 @@ export interface MatchDTO {
   ready: string[]
   entered: string[]
   countdown_ends_at: string | null
+  result: MatchResult | null // set once the game is over
 }
 export type QueueDTO = {
   mode: 'SQUAD'

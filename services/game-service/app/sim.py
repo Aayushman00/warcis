@@ -54,6 +54,9 @@ class Player:
     keys: dict = field(default_factory=lambda: {"up": False, "down": False, "left": False, "right": False})
     last_fire: int = -FIRE_COOLDOWN_MS
     killed_by: str | None = None  # display only: who landed the last hit, while dead
+    kills: int = 0
+    deaths: int = 0
+    captures: int = 0
 
 
 @dataclass
@@ -194,6 +197,10 @@ class Game:
         if p.hp > 0:
             return
         p.hp, p.alive, p.respawn_at, p.killed_by = 0, False, now + RESPAWN_MS, by
+        p.deaths += 1
+        killer = self.players.get(by) if by else None
+        if killer and killer.team != p.team:
+            killer.kills += 1
         if p.carrying_flag:
             f = self.flags[1 - p.team]
             f.state, f.carrier_id, f.x, f.y, f.dropped_at = "DROPPED", None, p.x, p.y, now
@@ -217,6 +224,7 @@ class Game:
                 bx, by = BASES[p.team]
                 # Capture only while our own flag is safely home.
                 if own.state == "AT_BASE" and math.hypot(p.x - bx, p.y - by) <= BASE_R:
+                    p.captures += 1
                     self.winner = p.team
                     self.capturer = p.id
                     return
@@ -239,7 +247,8 @@ class Game:
             "capturer": self.capturer,
             "players": [
                 {"id": p.id, "name": p.name, "team": TEAMS[p.team], "x": p.x, "y": p.y, "hp": p.hp,
-                 "alive": p.alive, "respawnAt": p.respawn_at, "carryingFlag": p.carrying_flag}
+                 "alive": p.alive, "respawnAt": p.respawn_at, "carryingFlag": p.carrying_flag,
+                 "kills": p.kills, "deaths": p.deaths, "captures": p.captures}
                 for p in self.players.values()
             ],
             "flags": [
@@ -259,6 +268,7 @@ class Game:
         for d in cp["players"]:
             p = g.players[d["id"]]
             p.x, p.y, p.hp, p.alive, p.respawn_at, p.carrying_flag = d["x"], d["y"], d["hp"], d["alive"], d["respawnAt"], d["carryingFlag"]
+            p.kills, p.deaths, p.captures = d.get("kills", 0), d.get("deaths", 0), d.get("captures", 0)  # older checkpoints have none
         for f, d in zip(g.flags, sorted(cp["flags"], key=lambda d: TEAMS.index(d["team"]))):
             f.state, f.x, f.y, f.carrier_id = d["state"], d["x"], d["y"], d["carrierId"]
             f.dropped_at = d["returnAt"] - FLAG_RETURN_MS if d["state"] == "DROPPED" else None
@@ -268,6 +278,28 @@ class Game:
         if cp.get("winner"):
             g.winner, g.capturer = TEAMS.index(cp["winner"]), cp.get("capturer")
         return g
+
+    def result(self, now: int) -> dict:
+        """Final per-player result of an ended match; this is what matchmaking-side history and stats read."""
+        if not self.ended:
+            raise ValueError("match has not ended")
+        return {
+            "winner": TEAMS[self.winner],
+            "capturer": self.capturer,
+            "duration_ms": max(0, now - self.started),
+            "players": [
+                {
+                    "id": p.id,
+                    "name": p.name,
+                    "team": TEAMS[p.team],
+                    "outcome": "WIN" if p.team == self.winner else "LOSS",
+                    "kills": p.kills,
+                    "deaths": p.deaths,
+                    "captures": p.captures,
+                }
+                for p in self.players.values()
+            ],
+        }
 
     def snapshot(self, now: int, connected=frozenset(), bots=frozenset()) -> dict:
         """connected: ids with a live socket. Others (dropped clients) stay in the match:
@@ -294,6 +326,9 @@ class Game:
                     "connected": p.id in connected,
                     "bot": p.id in bots,
                     "killedBy": p.killed_by,
+                    "kills": p.kills,
+                    "deaths": p.deaths,
+                    "captures": p.captures,
                 }
                 for p in self.players.values()
             ],
@@ -382,6 +417,9 @@ if __name__ == "__main__":  # self-check: python -m app.sim
             g.step(t + 20 * k)
     assert b0.hp == 0 and not b0.alive and b0.respawn_at is not None
     assert g.snapshot(t)["players"][1]["killedBy"] == "r0"  # kill feed attribution comes from the server
+    assert (r0.kills, r0.deaths, b0.kills, b0.deaths) == (1, 0, 0, 1)  # the kill is credited to the shooter only
+    with_stats = g.snapshot(t)["players"]
+    assert (with_stats[0]["kills"], with_stats[1]["deaths"]) == (1, 1)
     assert r0.alive and r0.hp == HP
     g.fire("b0", r0.x, r0.y, t + 1000)  # dead cannot shoot
     assert not g.shots
@@ -438,6 +476,17 @@ if __name__ == "__main__":  # self-check: python -m app.sim
     r2.x, r2.y = BASES[0]
     g.step(60)
     assert g.ended and TEAMS[g.winner] == "RED" and g.snapshot(60)["winner"] == "RED"
+    assert r2.captures == 1 and b0.captures == 0 and b0.deaths == 1 and b0.kills == 0  # b0 died to _damage with no killer
+    res = g.result(1060)
+    assert res["winner"] == "RED" and res["capturer"] == "r0" and res["duration_ms"] == 1060
+    assert [(p["id"], p["outcome"], p["captures"], p["deaths"]) for p in res["players"]] == [("r0", "WIN", 1, 0), ("b0", "LOSS", 0, 1)]
+    h = Game.restore(g.checkpoint(60), 100)  # stats survive a restart, including on an ended match
+    assert h.result(1060) == res
+    old = g.checkpoint(60)
+    for d in old["players"]:
+        for k in ("kills", "deaths", "captures"):
+            del d[k]
+    assert Game.restore(old, 100).players["r0"].captures == 0  # checkpoints written before stats existed still load
     assert [p["connected"] for p in g.snapshot(60, {"r0"})["players"]] == [True, False]
 
     # After the end nothing moves or fires.

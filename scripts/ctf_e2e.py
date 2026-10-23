@@ -339,10 +339,62 @@ def run_bots(max_s: float = 420) -> None:
     print("BOTS E2E PASSED")
 
 
+def check_result_and_rematch(mid: str, red: list[Client], blue: list[Client]) -> None:
+    """The finished game left a per-player result, history and career stats, and the party can queue again."""
+    n = len(red)
+    res = None
+    for _ in range(20):  # game-service writes the result right after the capture tick
+        res = red[0].status()["match"]["result"]
+        if res:
+            break
+        time.sleep(0.25)
+    assert res and res["winner"] == "RED" and res["capturer"] in {c.me["id"] for c in red}, res
+    by_id = {p["id"]: p for p in res["players"]}
+    assert set(by_id) == {c.me["id"] for c in red + blue}
+    assert all(p["outcome"] == ("WIN" if p["team"] == "RED" else "LOSS") for p in res["players"])
+    assert sum(p["captures"] for p in res["players"]) == 1 and by_id[res["capturer"]]["captures"] == 1
+    assert by_id[red[0].me["id"]]["kills"] >= 1 and by_id[blue[0].me["id"]]["kills"] >= 1  # the combat steps in play()
+    assert res["duration_ms"] > 0
+    print("  result stored on the match: winner, capturer, per-player kills / deaths / captures")
+
+    h = red[0].call("GET", "/matchmaking/history")
+    top = h["items"][0]
+    assert top["match_id"] == mid and top["outcome"] == "WIN" and top["my_team"] == "RED" and len(top["players"]) == 2 * n
+    assert blue[0].call("GET", "/matchmaking/history")["items"][0]["outcome"] == "LOSS"
+    ids = ",".join(c.me["id"] for c in red + blue)
+    stats = red[0].call("GET", f"/matchmaking/stats?ids={ids}")  # fresh accounts: this was their only finished match
+    for c in red + blue:
+        mine, st = by_id[c.me["id"]], stats[c.me["id"]]
+        won = mine["outcome"] == "WIN"
+        assert (st["matches"], st["wins"], st["losses"]) == (1, int(won), int(not won)), st
+        assert (st["kills"], st["deaths"], st["captures"]) == (mine["kills"], mine["deaths"], mine["captures"]), st
+    print("  history + career stats match the stored result")
+
+    # Play again: the party leader queues from the end screen; that retires the finished match for the party.
+    fill = n == 4
+    for c in red + blue:  # a browser heartbeats every 10 s; matchmaking drops a queued party with an offline member
+        c.call("POST", "/users/me/heartbeat")
+    for lead in red:
+        try:
+            lead.call("POST", "/matchmaking/queue", {"mode": "squad", "fill": fill})
+            break
+        except ApiFail as e:
+            assert e.code == "NOT_LEADER", e
+    else:
+        raise AssertionError("nobody on red could queue again")
+    assert lead.status()["state"] == "searching"
+    for c in red:  # teammates still on the scoreboard are moved to the new search with the party
+        if c is not lead and not fill:
+            assert c.status()["state"] == "searching"
+    lead.call("DELETE", "/matchmaking/queue")
+    print("  play again: party re-queued straight from the end screen")
+
+
 def run(n: int) -> None:
     mid, red, blue = form_match(n)
     print(f"{n}v{n} match {mid[:8]}")
     asyncio.run(play(mid, red, blue))
+    check_result_and_rematch(mid, red, blue)
     for c in red + blue:
         c.call("POST", f"/matchmaking/matches/{mid}/leave")
     assert red[0].status()["state"] == "idle"

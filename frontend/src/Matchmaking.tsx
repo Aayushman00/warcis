@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { MatchDTO, MMStatus, QPlayer, QueueDTO, TeamDTO } from './api'
 import { MAX_PARTY, type Player } from './data'
-import { Game } from './Game'
+import { Game, type Rematch } from './Game'
 import { Avatar, Icon } from './ui'
 
 type Group = { label: string; players: QPlayer[]; mine?: boolean }
@@ -33,14 +33,16 @@ export function Matchmaking({
   onCancel,
   onReady,
   onExit,
+  rematch,
 }: {
   status: Exclude<MMStatus, { state: 'idle' }>
   me: Player
   onCancel: () => void
   onReady: (matchId: string) => void
   onExit: (matchId: string) => void
+  rematch: Rematch
 }) {
-  if (status.state === 'entered') return <Game match={status.match} me={me} onExit={() => onExit(status.match.match_id)} />
+  if (status.state === 'entered') return <Game match={status.match} me={me} onExit={() => onExit(status.match.match_id)} rematch={rematch} />
   if (status.state === 'found' || status.state === 'countdown') return <Found match={status.match} me={me} onReady={onReady} onLeave={onExit} />
   return <Searching q={status.queue} me={me} onCancel={onCancel} />
 }

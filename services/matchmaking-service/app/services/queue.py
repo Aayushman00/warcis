@@ -3,6 +3,8 @@
 Queue entry status:  WAITING -> MATCHED | CANCELLED | INVALIDATED
 Match status:        FOUND (ready check) -> COUNTDOWN (everyone ready) -> IN_PROGRESS -> COMPLETED
                      FOUND | COUNTDOWN -> CANCELLED (ready check timed out, or a player left)
+A finished game gets a `result` (written by game-service) while still IN_PROGRESS; it completes
+once every player has left, either via "Return to hub" or by queueing again (rematch).
 """
 
 import asyncio
@@ -17,6 +19,7 @@ from pymongo.errors import DuplicateKeyError
 from app.db.mongo import events, matches, queue
 from app.services import party_client
 from app.services.packing import TEAM_SIZE, fifo, matchups, pack, unfilled_matchups
+from app.services.stats import result_view
 
 READY_TIMEOUT = timedelta(seconds=int(os.environ.get("READY_TIMEOUT_S", "45")))
 COUNTDOWN = timedelta(seconds=int(os.environ.get("COUNTDOWN_S", "3")))
@@ -52,6 +55,7 @@ async def enqueue(user_id: str, mode: str, fill: bool = True) -> dict:
         raise ApiError(409, "INVALID_PARTY_SIZE", "Party size must be between 1 and 4.")
 
     ids = [m["id"] for m in party["members"]]
+    await retire_ended(ids)  # play again: a party that queues has left its finished game
     existing = await queue.find_one({"party_id": party["party_id"], "status": "WAITING"})
     if existing and existing["party_version"] == party["version"] and existing["mode"] == mode.upper() and existing["fill"] == fill:
         return await status(user_id)  # idempotent: same party, same snapshot, already queued
@@ -119,6 +123,7 @@ def match_view(m: dict, user_id: str) -> dict:
         "ready": m["ready"],
         "entered": m["entered"],
         "countdown_ends_at": m["countdown_ends_at"].isoformat() if m.get("countdown_ends_at") else None,
+        "result": result_view(m),  # set once the game is over; lets a reconnecting client show the scoreboard
     }
 
 
@@ -225,10 +230,31 @@ async def leave(match_id: str, user_id: str) -> None:
     if not m:
         raise ApiError(404, "MATCH_NOT_FOUND", "Match not found.")
     await log(match_id, "PLAYER_LEFT", user_id)
+    await _complete_if_all_left(m)
+
+
+async def _complete_if_all_left(m: dict) -> None:
     if set(m["player_ids"]) <= set(m["left"]):
-        done = await matches.update_one({"match_id": match_id, "status": {"$nin": ["COMPLETED", "CANCELLED"]}}, {"$set": {"status": "COMPLETED", "ended_at": now()}})
+        done = await matches.update_one({"match_id": m["match_id"], "status": {"$nin": ["COMPLETED", "CANCELLED"]}}, {"$set": {"status": "COMPLETED", "ended_at": now()}})
         if done.modified_count:  # exactly one of the racing leavers logs it
-            await log(match_id, "MATCH_COMPLETED")
+            await log(m["match_id"], "MATCH_COMPLETED")
+
+
+async def retire_ended(user_ids: list[str]) -> None:
+    """Rematch: queueing again is how a party walks out of a game that already has a result.
+
+    Their finished matches get the party marked as left (the same state "Return to hub" sets), so
+    status() stops showing the end screen and the finished game can't block the new queue entry.
+    A teammate still looking at the scoreboard simply moves on to the new search.
+    """
+    async for m in matches.find({"player_ids": {"$in": user_ids}, "status": "IN_PROGRESS", "result": {"$exists": True}}):
+        mine = [u for u in user_ids if u in m["player_ids"] and u not in m["left"]]
+        if not mine:
+            continue
+        m = await matches.find_one_and_update({"match_id": m["match_id"]}, {"$addToSet": {"left": {"$each": mine}}}, return_document=ReturnDocument.AFTER)
+        for u in mine:
+            await log(m["match_id"], "PLAYER_LEFT", u, reason="rematch")
+        await _complete_if_all_left(m)
 
 
 # ─────────────── matcher ───────────────

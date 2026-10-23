@@ -18,6 +18,9 @@ export type GPlayer = {
   connected: boolean
   bot: boolean
   killedBy: string | null
+  kills: number
+  deaths: number
+  captures: number
 }
 export type GFlag = { team: Team; x: number; y: number; state: 'AT_BASE' | 'CARRIED' | 'DROPPED'; carrierId: string | null; returnAt: number | null }
 export type GShot = { id: number; owner: string; team: Team; x: number; y: number }

@@ -1,8 +1,9 @@
 import { useState, type FormEvent } from 'react'
-import { ago, MAX_PARTY, MODES, STATUS_LABEL, type Mode, type Player } from './data'
+import type { PlayerStats } from './api'
+import { ago, MAX_PARTY, MODES, STATUS_LABEL, statLine, type Mode, type Player } from './data'
 import { Avatar, AvatarStatus, Icon, WorldArt } from './ui'
 
-export type View = 'home' | 'friends' | 'party'
+export type View = 'home' | 'friends' | 'party' | 'profile'
 export interface Party {
   leaderId: string
   members: Player[]
@@ -17,6 +18,7 @@ export interface Ctx {
   mode: Mode
   fill: boolean
   activity: { id: number; text: string; t: number }[]
+  stats: Record<string, PlayerStats>
   isLeader: boolean
   slotsUsed: number
   setView: (v: View) => void
@@ -89,6 +91,7 @@ const statusText = (c: Ctx, f: Player) =>
 
 function FriendRow({ c, f, compact }: { c: Ctx; f: Player; compact?: boolean }) {
   const joined = c.inParty(f.id)
+  const record = statLine(c.stats[f.id])
   return (
     <li className="group flex items-center gap-3 rounded-lg px-2 py-2 hover:bg-white/[0.03]">
       <AvatarStatus name={f.name} status={f.status} size={compact ? 34 : 40} />
@@ -97,7 +100,15 @@ function FriendRow({ c, f, compact }: { c: Ctx; f: Player; compact?: boolean }) 
           {f.name}
           <span className="ml-1 font-normal text-ink-400">#{f.tag}</span>
         </p>
-        <p className={`truncate text-xs ${f.status === 'ingame' ? 'text-ingame' : joined ? 'text-ally' : 'text-ink-400'}`}>{statusText(c, f)}</p>
+        <p className={`truncate text-xs ${f.status === 'ingame' ? 'text-ingame' : joined ? 'text-ally' : 'text-ink-400'}`}>
+          {statusText(c, f)}
+          {record && (
+            <span className="text-ink-400" title="Wins–losses and kill/death ratio">
+              {' · '}
+              {record}
+            </span>
+          )}
+        </p>
       </div>
       {f.status !== 'offline' && !joined && (
         <button
