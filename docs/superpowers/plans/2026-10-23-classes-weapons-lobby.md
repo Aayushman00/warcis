@@ -1,13 +1,13 @@
 # Plan: Classes, Weapons, Abilities and the Match Lobby
 
-Status: **plan only, nothing implemented.** Written against `feature/match-results-history` @ `6462bbd`.
+Status: **plan only, nothing implemented.** All seven decisions in §13 are **approved by the user** and are authoritative requirements. Written against `feature/match-results-history` @ `6462bbd`.
 Baseline self-checks pass on that commit: `python -m app.sim` → `sim ok`, `python -m app.services.packing` → `packing ok`,
 `python scripts/bot_ai.py` → `bot_ai ok`.
 
 Notation used throughout:
 
 - **[FACT]** something read in the code at the cited `file:line`.
-- **[REC]** a recommendation of this plan. The implementer follows it unless §13 is answered differently.
+- **[REC]** a recommendation of this plan. The implementer follows it; it may be changed only for a concrete engineering reason that is reported back. Items the user decided are not [REC]: they are the approved decisions in §13 (cited as "Decision N").
 
 ---
 
@@ -60,7 +60,7 @@ queue WAITING ──matcher──▶ FOUND (lobby: select loadout, then ready) �
                             └─ any player declines   ─▶ CANCELLED reason=player_left  ◀──────┘ (decline still allowed in COUNTDOWN, as today)
 ```
 
-- "Match Found" is a **client-only reveal** (about 2 s of animation the first time the client sees a new `match_id` in state `found`). It is not a server state. See §13 Q1.
+- "Match Found" is a **client-only reveal** (about 2 s of animation the first time the client sees a new `match_id` in state `found`). It is not a server state and there is no server-enforced accept step (Decision 1).
 - Invariants enforced in Mongo with single-document conditional updates:
   1. `ready` ⊆ players with a valid `loadouts[uid]`.
   2. `loadouts[uid]` cannot change once `uid ∈ ready` or `status ≠ FOUND`.
@@ -112,7 +112,7 @@ queue WAITING ──matcher──▶ FOUND (lobby: select loadout, then ready) �
 | `frontend/src/Matchmaking.tsx` | `Found` → `Lobby` | reveal, class and weapon pickers, READY gated on the server-confirmed loadout, deadline. |
 | `frontend/src/App.tsx` | `<Matchmaking>` props | `onLoadout(id, loadout)` → `act(() => api(PUT …))`. |
 | `frontend/src/game/classes.ts` (**new**) | — | display names, blurbs, and a `drawAvatar(ctx, cls, …)` shared by the lobby (small canvas or SVG) and `render.ts`. |
-| `frontend/src/game/render.ts` | `GPlayer`, `Snapshot`, `GShot`, `draw`, `drawPlayer` | new fields; hidden players skipped; ally-invisible translucency; class silhouettes; per-weapon visuals; barriers; teleport-snap on reveal and dash. |
+| `frontend/src/game/render.ts` | `GPlayer`, `Snapshot`, `GShot`, `draw`, `drawPlayer` | new fields; hidden players skipped; ally-invisible translucency; class silhouettes; per-weapon visuals; barriers; snap (not interpolate) when a player's hidden state flips; dashes interpolate. |
 | `frontend/src/Game.tsx` | `viewSnap`, `hudOf`, input effect, footer HUD | mirror barriers; `KeyQ` → ability with mirrored aim; autofire gated by weapon cooldown from `hello.catalog`; ability and weapon HUD; HP segments from `maxHp`. |
 | `frontend/src/game/hud.css` | — | ability chip and cooldown ring. |
 | `frontend/src/Scoreboard.tsx`, `Profile.tsx` | — | optional class icon when the `class` field exists. |
@@ -226,7 +226,7 @@ Top-level `barriers: {id, owner, team, x, y, w, h, hp, maxHp, expiresAt}[]` go t
 
 ### 5.1 States (server)
 
-`FOUND` (lobby) → `COUNTDOWN` → `IN_PROGRESS`; `FOUND`/`COUNTDOWN` → `CANCELLED`. Per player within `FOUND`: `NO_LOADOUT` → `SELECTED` (changeable) → `READY` (locked). [REC] No un-ready (§13 Q3).
+`FOUND` (lobby) → `COUNTDOWN` → `IN_PROGRESS`; `FOUND`/`COUNTDOWN` → `CANCELLED`. Per player within `FOUND`: `NO_LOADOUT` → `SELECTED` (changeable) → `READY` (locked). Players may change their loadout freely until they ready; readying locks it, and there is no un-ready and no change afterwards (Decision 3).
 
 ### 5.2 Exact Mongo operations
 
@@ -256,7 +256,7 @@ if not before:  # disambiguate for the error code only
 
 - **[REC]** One deadline for the whole lobby: `lobby_ends_at = created_at + READY_TIMEOUT` (default 60 s). Stored, so the UI shows the server's deadline instead of computing one.
 - `tick`: `{"status": "FOUND", "$or": [{"lobby_ends_at": {"$lt": now}}, {"lobby_ends_at": {"$exists": False}, "created_at": {"$lt": now - READY_TIMEOUT}}]}` → conditional `FOUND` → `CANCELLED`, `reason: "lobby_timeout"`, `ended_at`. The `$or` branch covers lobby documents created before the deploy.
-- A player who has not selected cannot be ready, so on timeout the match is cancelled for everyone. This is today's semantics: no auto-assigned loadout and no auto-start (§13 Q4).
+- A player who has not selected cannot be ready, so on timeout the match is cancelled for everyone. This is today's semantics: no auto-assigned loadout, no auto-start and no partial requeue (Decision 4).
 - `status()` notice: `lobby_timeout` → "Match cancelled: not every player picked a loadout and readied up."
 - `COUNTDOWN` has no timeout (unchanged) and lasts 3 s.
 - Race "last ready vs timeout": both are conditional on `status: FOUND`; exactly one wins. If the timeout wins, the ready call's `$addToSet` may land on a cancelled document; the COUNTDOWN flip then fails and the client sees `idle` plus a notice. Unchanged from today.
@@ -296,7 +296,7 @@ if not before:  # disambiguate for the error code only
 | Shots expose the shooter's position | Firing reveals (§7.5). The reveal happens in `fire()` before the shot is appended, so no snapshot holds a hidden player with a shot. |
 | Damage numbers or HP change on a hidden enemy | Positive damage reveals in the same `_damage` call, so the next snapshot already has coordinates. |
 | Enemy cooldowns | `abilityReadyAt = null` for enemies. |
-| Lobby: enemy picks visible before the start (counter-picking) | `match_view` returns only own-team loadouts while `status ∈ {FOUND, COUNTDOWN}`, and all of them once `IN_PROGRESS` (§13 Q2). `ready` stays fully visible, as today. |
+| Lobby: enemy picks visible before the start (counter-picking) | `match_view` returns only own-team loadouts while `status ∈ {FOUND, COUNTDOWN}`, and all of them once `IN_PROGRESS` (Decision 2). Enemy `ready` indicators stay visible, as today. |
 | `match_events` `LOADOUT_SELECTED` | Not exposed by any route; audit only. |
 | End of match | `snapshot` treats `ended` as everyone visible, so the scoreboard and final frame show all players. |
 
@@ -347,7 +347,7 @@ Per shot per tick, segment `A → B` (`B = A + v·dt`). Find the **smallest `t �
 2. **Enemy barriers** (`b.team != shot.team`, `b.hp > 0`): the same slab test on the barrier rect inflated by `SHOT_R`.
 3. **Enemy players** (`p.alive`, `p.team != shot.team`): ray-vs-circle with radius `PLAYER_R + SHOT_R`, first root in `[0,1]`; a start already inside the circle counts as `t = 0`. Hidden enemies **are** hit (they stay damageable).
 
-Then resolve the earliest: wall → shot dies; barrier → `barrier.hp -= shot.damage`, shot dies, barrier removed at `hp <= 0`; player → `_damage(p, now, shot.owner, shot.damage)`, shot dies. Ties: wall/barrier before player (cover wins). TTL: drop when `now - born >= ttl` (checked before the sweep, as today). There is no friendly fire (unchanged). Own-team barriers do not block (§13 Q5).
+Then resolve the earliest: wall → shot dies; barrier → `barrier.hp -= shot.damage`, shot dies, barrier removed at `hp <= 0`; player → `_damage(p, now, shot.owner, shot.damage)`, shot dies. Ties: wall/barrier before player (cover wins). TTL: drop when `now - born >= ttl` (checked before the sweep, as today). There is no friendly fire (unchanged). Own-team barriers do not block (Decision 5).
 
 Two helpers, both pure and self-checked: `_seg_rect_t(ax, ay, bx, by, rect, pad) -> float | None` and `_seg_circle_t(ax, ay, bx, by, cx, cy, r) -> float | None`. This replaces the existing `_seg_dist2` use for shots and fixes both tunnelling and "hit through a wall corner" (§1.1).
 
@@ -355,7 +355,7 @@ Two helpers, both pure and self-checked: `_seg_rect_t(ax, ay, bx, by, rect, pad)
 
 - `_damage(p, now, by, amount)`: if `amount <= 0` return; `_reveal(p)`; `p.hp -= amount`; if `hp > 0` return. Death: as today (`hp = 0`, `alive = False`, `respawn_at = now + RESPAWN_MS`, `killed_by`, kill/death counters, flag drop at the death position), **plus** `invisible_until = None` and `dash_from = dash_until = None`.
 - Respawn (`_spawn`): `hp = CLASS[pclass].hp`, visible, no dash. **Cooldowns are not reset** by death or respawn; `ability_ready_at` keeps running (it is wall clock). `last_fire` is kept.
-- The Guardian's barrier **outlives the Guardian's death** and expires or breaks normally ([REC]: simplest and predictable).
+- The Guardian's barrier **outlives the Guardian's death** and expires or breaks normally (Decision 5).
 - Respawn time stays 3000 ms. No spawn protection (not requested).
 
 ### 7.3 Assaulter: dash
@@ -371,13 +371,13 @@ Two helpers, both pure and self-checked: `_seg_rect_t(ax, ay, bx, by, rect, pad)
 - Activation: alive, not ended, ready. Aim vector `u` (zero → ignore, consume nothing). Snap to an axis: `|ux| >= |uy|` → vertical slab (`w = BARRIER_THICK`, `h = BARRIER_LEN`), else horizontal (`w = BARRIER_LEN`, `h = BARRIER_THICK`). Centre = player + `u·BARRIER_OFFSET`.
 - Validity: the rect lies fully in bounds and does not overlap any wall. If not, retry with the offset stepped back 10 px down to `PLAYER_R + BARRIER_THICK/2`. If still invalid, ignore and consume nothing (no cooldown spent).
 - Remove the owner's existing live barrier (cannot happen with the default numbers, since cooldown > lifetime; it is enforced anyway), append the new `Barrier(hp=BARRIER_HP, expires_at=now + BARRIER_MS)`, and set `ability_ready_at = now + BARRIER_CD_MS`.
-- Blocks **enemy projectiles only**; does **not** block movement for anyone (§13 Q5). Takes the projectile's full damage. Removed in `step` when `now >= expires_at` or `hp <= 0`.
+- Blocks **enemy projectiles only**; does **not** block movement for anyone (Decision 5), so bot pathing and the player movement code are unchanged. Takes the projectile's full damage. Removed in `step` when `now >= expires_at` or `hp <= 0`.
 - [REC] Axis-aligned rather than rotated: it reuses the wall collision and rendering code, and on this map's axis-aligned geometry it reads naturally.
 
 ### 7.5 Assassin: invisibility
 
-- Activation: alive, not ended, ready, **not carrying a flag**. Sets `invisible_until = now + INVIS_MS` and `ability_ready_at = now + INVIS_CD_MS`. The cooldown counts from activation; an early reveal gives no refund.
-- Ends on: expiry (cleared in `step`), **any positive damage** (requirement), **firing** (`fire()` reveals before appending the shot), **picking up the enemy flag** (`_flags`), death, and match end.
+- Activation (Decision 6): alive, not ended, ready, **not carrying a flag** (refused without consuming the cooldown). Sets `invisible_until = now + INVIS_MS` and `ability_ready_at = now + INVIS_CD_MS`. The cooldown counts from activation; an early reveal gives no refund.
+- Ends immediately on (Decision 6): expiry (cleared in `step`), **any positive damage** (requirement), **firing** (`fire()` reveals before appending the shot), **picking up the enemy flag** (`_flags`), death, and match end.
 - Unaffected by invisibility: movement speed, flag *return* by touching your own dropped flag (it still reveals nothing extra, since the flag simply goes home), and being hit.
 - Viewer rules: §3.5. Allies and self see `invisible: true` and render at about 35 % opacity with a shimmer.
 
@@ -484,11 +484,11 @@ All numbers live in one table in `sim.py` and are surfaced through `catalog`; no
 4. The sniper does not tunnel: a shot fired at a target directly behind the 40 px wall `(230,140,40,140)` dies at the wall, with dt values of 33 ms and 100 ms.
 5. Earliest hit along the path: two enemies on the line, the nearer is damaged regardless of dict order.
 6. Wall before player: a target just behind a wall corner within one tick's segment is not hit.
-7. Barrier blocks an enemy shot and takes damage; an own-team shot passes; the barrier breaks at 0 HP; it expires at `expires_at`; an AR shot at 33 ms dt never tunnels the 12 px slab.
+7. Barrier blocks an enemy shot and takes damage; an own-team shot passes; the barrier breaks at 0 HP; it expires at `expires_at`; players of both teams walk through it unimpeded (no movement collision); an AR shot at 33 ms dt never tunnels the 12 px slab.
 8. Barrier placement into a wall steps back or is rejected without consuming the cooldown; a barrier never overlaps a wall.
 9. Dash moves `160 ± 2` px in open space independent of tick size (one step of 500 ms vs steps of 10 ms); it stops at walls without crossing them; the player is damageable mid-dash; the cooldown is enforced.
 10. Invisibility: the enemy-view snapshot has `x is None`, `hidden`, `abilityReadyAt is None`; the ally view has coordinates and `invisible`; a full view (`viewer_team=None`) has coordinates. Revealed by 1 damage; **not** revealed by 0-damage calls; revealed by `fire` (no snapshot ever contains a hidden player plus their shot); revealed by enemy-flag pickup; cannot activate while carrying; expiry reveals.
-11. Death clears dash and invisibility, keeps the cooldown, keeps the barrier.
+11. Death clears dash and invisibility, keeps the cooldown, and the dead Guardian's barrier stays, still blocks enemy shots, and expires or breaks normally.
 12. Checkpoint round-trip with an active barrier, active invisibility and pending cooldowns: `restore(cp).checkpoint(saved) == cp`. A legacy checkpoint without class/weapon/barriers restores with defaults and clamps HP; an unknown class raises `ValueError`; a barrier with a mismatched team raises `ValueError`.
 13. `result()` includes class and weapon.
 14. Ended game: all views unhidden.
@@ -507,6 +507,10 @@ Other self-checks:
 - `ready` → a further `PUT` → 409 `LOADOUT_LOCKED`.
 - All ready → `countdown`; `PUT` → 409 `LOADOUT_LOCKED`; `entered`; now the enemy sees all loadouts.
 - Lobby timeout: run with `READY_TIMEOUT_S` lowered (e.g. 5 s via `.env`); one player never selects → `idle` with the lobby notice and `reason == lobby_timeout`. If changing the env var in the shared stack is undesirable, gate this case behind an env flag in the script.
+- A player may `PUT` several different loadouts before readying; the last one is the one the game uses.
+- Duplicate classes and weapons on one team (all four allies the same) are accepted and the match starts; no composition error exists.
+- During `COUNTDOWN`, an enemy's status still lacks the loadouts (they appear only at `IN_PROGRESS`), while enemy `ready` flags are visible throughout.
+- After a lobby timeout, nobody is auto-assigned a loadout, no match enters `IN_PROGRESS`, and no one is re-queued (status is `idle`, not `searching`).
 - Existing checks keep passing (the ready loop now sets a loadout first).
 
 ### 10.3 Multiplayer E2E (`scripts/ctf_e2e.py`)
@@ -551,28 +555,31 @@ Each step ends with its listed checks green. Commit per step.
 ## 12. Acceptance criteria
 
 1. A client cannot reach `IN_PROGRESS` or open a live game socket without every player in the match having a server-stored, valid loadout and having readied. Verified by `e2e.py` (409s) and `ctf_e2e.py abilities` (WS refused in `FOUND`).
-2. Loadouts are immutable after the player readies and after the lobby leaves `FOUND`; any attempt returns 409 `LOADOUT_LOCKED`.
-3. A lobby not completed by `lobby_ends_at` is `CANCELLED` with `reason: lobby_timeout`, and every member sees `idle` with a notice within one poll.
-4. Enemy loadouts are absent from `GET /matchmaking/status` until `IN_PROGRESS`.
+2. Loadouts are freely changeable until the player readies; they are immutable after the player readies and after the lobby leaves `FOUND`; any attempt then returns 409 `LOADOUT_LOCKED`. There is no un-ready.
+3. A lobby not completed by `lobby_ends_at` is `CANCELLED` as a whole with `reason: lobby_timeout`; no defaults are assigned and nobody is re-queued; every member sees `idle` with a notice within one poll.
+4. During `FOUND` and `COUNTDOWN`, `GET /matchmaking/status` shows the caller's own team's loadouts and no enemy loadouts (enemy `ready` flags stay visible); both teams' loadouts appear from `IN_PROGRESS`.
 5. In game, each class spawns and respawns at its HP (85/140/100); each weapon's damage, cooldown, pellets and range match §9 within one tick; the Assaulter fires 25 % faster.
 6. Dash moves about 160 px, never crosses walls, and the dashing player takes damage.
-7. A barrier stops every enemy projectile type (including sniper rounds at 100 ms tick gaps), passes own-team shots, takes damage, breaks at 0 HP and expires on time.
-8. While invisible, an Assassin's coordinates **never** appear in any frame sent to an enemy socket, including the first frame after connect. Any positive damage, firing or flag pickup reveals them in the next frame; allies always see them.
+7. A barrier stops every enemy projectile type (including sniper rounds at 100 ms tick gaps), passes own-team shots, never blocks any player's movement, takes damage, breaks at 0 HP, expires on time, and persists after its owner dies.
+8. While invisible, an Assassin's coordinates **never** appear in any frame sent to an enemy socket, including the first frame after connect. Any positive damage, firing or enemy-flag pickup reveals them in the next frame; activation is refused while carrying a flag; allies always see them.
 9. Every class is visually distinguishable on the canvas and in the lobby, for allies and (when visible) enemies.
 10. A game-service restart (graceful or SIGKILL) preserves class, weapon, HP, cooldowns, invisibility timers and barriers from the last checkpoint. Legacy checkpoints restore with defaults; corrupt ones become `ABANDONED`.
 11. Results, history and career stats are unchanged in shape apart from optional `class`/`weapon` per player; old history rows still render.
-12. All existing checks still pass: `sim ok`, `packing ok`, `stats ok`, `bot_ai ok`, `e2e.py`, `ctf_e2e.py 1 2 4 recovery bots`. The bots still fill a 4v4 and finish the match.
+12. Any combination of classes and weapons is accepted on a team, including duplicates.
+13. All existing checks still pass: `sim ok`, `packing ok`, `stats ok`, `bot_ai ok`, `e2e.py`, `ctf_e2e.py 1 2 4 recovery bots`. The bots still fill a 4v4 and finish the match.
 
 ---
 
-## 13. Decisions that genuinely need clarification
+## 13. Decisions (all approved)
 
-Each question has a recommended default that this plan assumes.
+**Decision status: all seven decisions below have been approved by the user and are authoritative requirements, not open questions.** The reasoning is kept for the implementer.
 
-1. **Is "Match Found" a server-enforced accept step?** Default: no. It is a client reveal, and the lobby is the existing `FOUND` state. A real accept step would add a status, a second timeout and a second cancellation path.
-2. **Can players see the enemy team's picks during the lobby?** Default: no, only their own team's until the match starts (avoids counter-picking).
-3. **Can a ready player change loadout or un-ready?** Default: no; READY locks the loadout. Un-ready would need a new endpoint and reopens the COUNTDOWN race.
-4. **Lobby timeout behaviour.** Default: cancel the whole match (today's semantics). The alternative is to auto-assign a default loadout to non-selectors and start, or cancel only for absent players and requeue the rest. Both change the queue lifecycle.
-5. **Barrier rules.** Default: blocks *enemy* projectiles only, does *not* block movement, and survives its owner's death. Blocking movement would let a Guardian seal the flag stand or a corridor, and would need bot pathing changes.
-6. **Invisibility edges.** Default: firing reveals, enemy-flag pickup reveals, and it cannot be activated while carrying. Without "firing reveals", shots of a hidden shooter would have to be shown (leaking the position) or hidden (unfair).
-7. **Composition limits.** Default: none. Duplicate classes and weapons are allowed on a team.
+What is *not* decided by the user and stays open: balance numbers and gameplay-feel values in §9 (to be tuned by playtesting), and the [REC] implementation choices (for example axis-aligned barriers, deterministic shotgun spread, a 60 s lobby deadline, dash-while-firing and dash-while-carrying being allowed). Those are engineering defaults that may be adjusted if testing shows a problem. No user decision is outstanding.
+
+1. **"Match Found" is a client-side visual reveal only.** It is not a server-enforced accept step. The existing `FOUND` state becomes the match lobby. A real accept step would have added a status, a second timeout and a second cancellation path.
+2. **Enemy loadouts are hidden during the lobby.** In `FOUND` and `COUNTDOWN` players see their own team's class and weapon selections, not the enemy's; enemy readiness indicators stay visible. Both teams' loadouts become visible when the match starts (`IN_PROGRESS`). This avoids counter-picking.
+3. **Readying locks the loadout.** Players change class and weapon freely until they ready. There is no un-ready and no change afterwards. Un-ready would have needed a new endpoint and reopened the COUNTDOWN race.
+4. **A lobby timeout cancels the entire match.** No defaults are assigned to players who did not select, and the match is not partially re-queued. This is today's semantics; the alternatives would have changed the queue lifecycle.
+5. **Guardian barrier.** It blocks enemy projectiles only, does not block player movement, survives its owner's death, stays destructible and expires after its configured lifetime. Blocking movement would have let a Guardian seal the flag stand or a corridor and required bot pathing changes.
+6. **Assassin invisibility.** It ends immediately on any positive damage, on firing a weapon, or on picking up the enemy flag, and cannot be activated while carrying a flag. Without "firing reveals", a hidden shooter's shots would either leak its position or be unfair.
+7. **No team composition restrictions.** Duplicate classes and weapons are permitted on the same team.
