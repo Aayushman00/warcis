@@ -1,7 +1,7 @@
 from warcis_common.security import CurrentUser, current_user
 from fastapi import APIRouter, Depends, Query, Response
 
-from app.schemas.mm import QueueIn
+from app.schemas.mm import LoadoutIn, QueueIn
 from app.services import queue, stats
 
 router = APIRouter(prefix="/matchmaking")
@@ -31,6 +31,11 @@ async def get_status(me: CurrentUser = Depends(current_user)):
 @router.post("/matches/{match_id}/ready")
 async def ready(match_id: str, me: CurrentUser = Depends(current_user)):
     return await queue.ready(match_id, me.id)
+
+
+@router.put("/matches/{match_id}/loadout")
+async def set_loadout(match_id: str, body: LoadoutIn, me: CurrentUser = Depends(current_user)):
+    return await queue.set_loadout(match_id, me.id, body.class_, body.weapon)
 
 
 @router.post("/matches/{match_id}/leave", status_code=204)

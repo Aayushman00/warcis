@@ -328,6 +328,7 @@ function Launcher({ me, setMe }: { me: Player; setMe: (p: Player | null) => void
               me={me}
               onCancel={() => act(() => api('/matchmaking/queue', { method: 'DELETE' }), 'Left matchmaking queue')}
               onReady={(id) => act(() => api(`/matchmaking/matches/${id}/ready`, { method: 'POST' }))}
+              onLoadout={(id, loadout) => act(() => api(`/matchmaking/matches/${id}/loadout`, { method: 'PUT', body: loadout }))}
               onExit={(id) => act(() => api(`/matchmaking/matches/${id}/leave`, { method: 'POST' }), 'Match completed · returned to hub')}
               rematch={{ canQueue: isLeader, leaderName: party.members.find((m) => m.id === party.leaderId)?.name ?? null, onQueue: ctx.matchmake }}
             />

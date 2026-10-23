@@ -1,4 +1,5 @@
-import type { TeamName } from './api'
+import type { ClassId, TeamName } from './api'
+import { CLASS_INFO } from './game/classes'
 
 /** One scoreboard line. `team` must use the same naming as `myTeam` (server or in-game view). */
 export interface ScoreRow {
@@ -8,6 +9,7 @@ export interface ScoreRow {
   kills: number
   deaths: number
   captures: number
+  cls?: ClassId // shown as a small tag when known (matches played before classes existed have none)
 }
 
 const order = (a: ScoreRow, b: ScoreRow) => b.captures - a.captures || b.kills - a.kills || a.deaths - b.deaths || a.name.localeCompare(b.name)
@@ -36,7 +38,10 @@ function Side({ title, rows, meId, tone }: { title: string; rows: ScoreRow[]; me
       <tbody>
         {rows.map((r) => (
           <tr key={r.id} className={`border-t border-white/[0.06] ${r.id === meId ? 'bg-gold/[0.09] font-semibold text-gold-soft' : 'text-ink-100'}`}>
-            <td className="truncate py-1.5 pr-2">{r.name}</td>
+            <td className="truncate py-1.5 pr-2">
+              {r.name}
+              {r.cls && <span className="ml-1.5 font-display text-[10px] tracking-widest text-ink-400" title={CLASS_INFO[r.cls].name}>{CLASS_INFO[r.cls].short}</span>}
+            </td>
             <td className="py-1.5 text-right">{r.captures}</td>
             <td className="py-1.5 text-right">{r.kills}</td>
             <td className="py-1.5 text-right">{r.deaths}</td>

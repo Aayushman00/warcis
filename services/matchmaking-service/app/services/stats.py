@@ -63,6 +63,16 @@ def result_view(m: dict) -> dict | None:
     }
 
 
+def visible_loadouts(m: dict, my_team: int) -> dict:
+    """Loadouts a player may see. In the lobby (FOUND, COUNTDOWN) only their own team's, so nobody can
+    counter-pick; everyone's once the match is running or over."""
+    picks = m.get("loadouts") or {}
+    if m["status"] != "IN_PROGRESS" and not m.get("result"):
+        mine = {p["id"] for p in m["teams"][my_team]["players"]}
+        picks = {pid: pick for pid, pick in picks.items() if pid in mine}
+    return {pid: {"class": pick["class"], "weapon": pick["weapon"]} for pid, pick in picks.items()}
+
+
 def history_item(m: dict, user_id: str) -> dict:
     r = result_view(m)
     mine = next(p for p in r["players"] if p["id"] == user_id)
@@ -112,4 +122,15 @@ if __name__ == "__main__":  # self-check of the pure shaping code (the aggregati
     assert h["outcome"] == "LOSS" and h["my_team"] == "BLUE" and h["me"] == {"kills": 1, "deaths": 2, "captures": 0}
     assert h["winner"] == "RED" and h["duration_ms"] == 61000 and len(h["players"]) == 2
     assert result_view({"match_id": "x"}) is None
+    p2 = [dict(p, **{"class": "GUARDIAN", "weapon": "SHOTGUN"}) for p in players]  # class and weapon ride along on new results
+    assert history_item({**m, "result": {**m["result"], "players": p2}}, "a")["players"][0]["class"] == "GUARDIAN"
+    assert history_item(m, "a")["players"][0].get("class") is None  # results written before loadouts existed
+
+    lm = {"status": "FOUND", "teams": [{"players": [{"id": "a"}, {"id": "b"}]}, {"players": [{"id": "c"}]}],
+          "loadouts": {"a": {"class": "GUARDIAN", "weapon": "SHOTGUN", "at": t}, "c": {"class": "ASSASSIN", "weapon": "SNIPER_RIFLE", "at": t}}}
+    assert visible_loadouts(lm, 0) == {"a": {"class": "GUARDIAN", "weapon": "SHOTGUN"}}  # the enemy's pick stays hidden in the lobby
+    assert visible_loadouts(lm, 1) == {"c": {"class": "ASSASSIN", "weapon": "SNIPER_RIFLE"}}
+    assert set(visible_loadouts({**lm, "status": "COUNTDOWN"}, 0)) == {"a"}
+    assert set(visible_loadouts({**lm, "status": "IN_PROGRESS"}, 0)) == {"a", "c"}  # revealed when the match starts
+    assert visible_loadouts({"status": "FOUND", "teams": lm["teams"]}, 0) == {}  # legacy lobby documents
     print("stats ok")

@@ -47,7 +47,7 @@ function Row({ m, meId, open, toggle }: { m: HistoryItem; meId: string; open: bo
           <p className="mb-3 text-xs text-ink-400 sm:hidden">
             {m.me.kills} K · {m.me.deaths} D · {m.me.captures} Cap
           </p>
-          <Scoreboard rows={m.players} meId={meId} myTeam={m.my_team} />
+          <Scoreboard rows={m.players.map((p) => ({ ...p, cls: p.class }))} meId={meId} myTeam={m.my_team} />
         </div>
       )}
     </li>

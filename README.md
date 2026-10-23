@@ -7,7 +7,7 @@ that use two different databases, **PostgreSQL** for relational social state and
 **MongoDB** for matchmaking and match documents.
 
 ```
-SIGN IN → HOME → FRIENDS → PARTY (1–4) → MATCHMAKING → MATCH FOUND → PLAY → SCOREBOARD → PLAY AGAIN / PROFILE
+SIGN IN → HOME → FRIENDS → PARTY (1–4) → MATCHMAKING → MATCH FOUND → MATCH LOBBY (class + weapon, ready) → PLAY → SCOREBOARD → PLAY AGAIN / PROFILE
 ```
 
 Entering a match drops every player into a small **Capture The Flag** game (1v1, 2v2 or 4v4)
@@ -43,7 +43,7 @@ flowchart TB
 | **gateway** | Single public origin. Routes by path prefix, forwards `Authorization`, and returns backend responses unchanged. Never exposes `/internal`. | – |
 | **auth-service** | Register, login (bcrypt), JWT issue, profile, presence (online/away/offline). | `auth.users` |
 | **party-service** | Friends, friend requests, parties, invitations, and every party rule. Answers matchmaking's validation calls. | `social.*` |
-| **matchmaking-service** | Queue, cancel, status, team formation, match lifecycle (ready → enter → leave). | MongoDB |
+| **matchmaking-service** | Queue, cancel, status, team formation, match lifecycle (lobby: loadout + ready → countdown → in progress → leave). | MongoDB |
 
 Every service verifies the JWT itself with the shared `JWT_SECRET`, so no request needs a
 round trip to auth-service. Service-to-service calls go to `/internal/*`, which checks a
@@ -111,7 +111,7 @@ refresh keeps you signed in.
    *"Waiting for Astra to start the queue"* (the server also returns `403 NOT_LEADER`).
 7. **Tab A**: **MATCHMAKE**. The queue entry goes into MongoDB. Your party of 2 plus the bots fill two
    teams and **MATCH FOUND** appears in both tabs with real teams and party grouping.
-8. Ready checks tick in from the server and the match starts. Play until a flag is captured.
+8. In the **match lobby**, pick a class and a weapon, then press READY (that locks your choice). The server starts the countdown once everyone is ready. Play until a flag is captured. Press **Q** for your class ability.
 9. The end screen shows the scoreboard. The party leader clicks **PLAY AGAIN** to requeue the same party,
    or anyone clicks **RETURN TO HUB**. Open **Profile** for career stats and match history; friends show
    their record (`3W–1L · 1.25 K/D`) in the friends list.
@@ -132,6 +132,8 @@ Automated rule check (stop the bots first so the queue is empty):
 docker compose stop bots
 pip install httpx && python scripts/e2e.py         # → ALL E2E CHECKS PASSED
 cd services/matchmaking-service && python -m app.services.packing   # → packing ok
+cd services/common && python -m warcis_common.loadout                  # → loadout ok
+# lobby timeout case: start the stack with READY_TIMEOUT_S=15, then  E2E_READY_TIMEOUT_S=15 python scripts/e2e.py
 cd services/matchmaking-service && python -m app.services.stats     # → stats ok
 ```
 
@@ -145,10 +147,40 @@ cd services/matchmaking-service && python -m app.services.stats     # → stats 
 - **Roster** comes from the match document: `teams[0]` is RED, `teams[1]` is BLUE. No new team logic.
 - **Connect:** `WS /api/game/ws/{match_id}?token=<JWT>` (nginx → gateway → game-service). The room
   starts on the first connection; everyone spawns at their team's spawn points.
-- **Client → server (intents only):** `{"t":"input", up, down, left, right}` and `{"t":"fire", x, y}` (aim point).
-- **Server → clients at 30 Hz:** `{"t":"state", players, flags, shots, state, winner, elapsed}`.
-- Server decides movement, wall collision, projectiles (25 dmg, 500 ms cooldown), death, 3 s respawn,
-  flag pickup / drop on death / return by own team / auto-return after 10 s, and capture.
+- **Client → server (intents only):** `{"t":"input", up, down, left, right}`, `{"t":"fire", x, y}` (aim point) and
+  `{"t":"ability", x, y}` (Q, aimed the same way). Class and weapon are never sent by a client.
+- **Server → clients at 30 Hz:** `{"t":"state", players, flags, shots, barriers, state, winner, elapsed}`. Each team gets
+  its own snapshot (see *Invisibility* below). `hello` carries a `catalog` of class and weapon numbers for the HUD.
+- Server decides movement, wall collision, projectiles (swept along their whole path each tick, so fast rounds
+  never tunnel a wall or a barrier), damage, death, 3 s respawn, flag pickup / drop on death / return by own
+  team / auto-return after 10 s, and capture.
+
+### Match lobby, classes and weapons
+
+`FOUND` is the **match lobby**. "Match found" is only a short client-side reveal; the server has no extra accept step.
+Each player picks a class and a weapon independently (`PUT …/loadout`, changeable until READY), the server stores them
+on the match document, and READY is refused without one. READY locks the choice. The match starts once everyone is
+ready; if the lobby is not complete by `lobby_ends_at` the whole match is cancelled (no defaults, no re-queue).
+During the lobby you see your own team's picks and the enemy team's ready flags, never the enemy's picks; both teams'
+loadouts are visible once the match starts. Duplicate classes and weapons on a team are allowed.
+
+| Class | HP | Q ability |
+|---|---|---|
+| Assaulter | 85 | **Dash** ≈160 px in 160 ms (5 s cooldown); fires 25 % faster; still damageable while dashing |
+| Guardian | 140 | **Barrier** 90×12 px, 150 HP, lasts 8 s (14 s cooldown); blocks *enemy projectiles only*, never movement, and outlives its owner |
+| Assassin | 100 | **Invisibility** 5 s (15 s cooldown); ends on any damage, on firing, or on picking up the enemy flag; cannot be started while carrying a flag |
+
+| Weapon | Damage | Cooldown | Notes |
+|---|---|---|---|
+| Assault Rifle | 14 | 160 ms | balanced, ≈770 px range |
+| Shotgun | 9 × 7 pellets | 850 ms | fixed fan, ≈270 px range |
+| Sniper Rifle | 70 | 1500 ms | 1600 px/s, ≈1440 px range; never a one-shot |
+
+All numbers live in one table at the top of `app/sim.py`. They are initial values and need playtesting.
+
+**Invisibility is enforced on the server.** An invisible Assassin is sent to its enemies *without coordinates*
+(`x`/`y` are `null`, `hidden: true`, and its ability timer is withheld), in every frame including the first one after a
+reconnect; allies and the Assassin see it as a faint shimmer. Hidden players can still be shot.
 - **Capture** only counts while your own flag is `AT_BASE`. The first capture ends the match: the server
   writes the result onto the match (see [Results, history and stats](#results-history-and-stats)) and logs
   `MATCH_ENDED`. "Return to hub" uses the existing `/matchmaking/matches/{id}/leave`, which completes the match.
@@ -163,10 +195,10 @@ cd services/matchmaking-service && python -m app.services.stats     # → stats 
   with WebAudio.
 - **Bots** (`scripts/bots.py` + `scripts/bot_ai.py`) enter the match and play over the same WebSocket
   protocol, at ~10 Hz. They chase an enemy carrier, recover a dropped flag, attack or defend (one bot per
-  team guards the base), fight what they can see (reaction delay + aim noise), otherwise patrol. They use
+  team guards the base), fight what they can see (reaction delay + aim noise; pace and range follow their weapon), use Q (dash to escape with the flag, barrier against an incoming enemy, cloak on the way to the flag), otherwise patrol. In the lobby they pick a random class and weapon. They use
   grid BFS around walls and get no extra stats. A player with no live socket keeps their state and is shown "OFFLINE".
 - **Recovery:** every 3 s (and on clean shutdown) a small checkpoint goes to MongoDB `game_checkpoints`
-  (players, flags, timers, winner). On startup the service restores PLAYING checkpoints newer than 10 min
+  (players with class, weapon and cooldowns, flags, barriers, timers, winner). On startup the service restores PLAYING checkpoints newer than 10 min
   of `IN_PROGRESS` matches; clients and bots reconnect on their own. Anything else is logged and marked
   `ABANDONED`, never invented.
 
@@ -177,6 +209,8 @@ python scripts/ctf_e2e.py 1 2 4          # bots stopped: real 1v1/2v2/4v4, one s
                                          # result, history, career stats and play-again requeue
 python scripts/ctf_e2e.py recovery       # restart game-service mid-match, state is restored
 CTF_CRASH=1 python scripts/ctf_e2e.py recovery   # same with SIGKILL (periodic checkpoint only)
+python scripts/ctf_e2e.py abilities      # classes over real sockets: invisibility privacy (incl. first frame after reconnect),
+                                         # barrier, dash. Also: lobby bypass is refused (WS opened before the match starts)
 python scripts/ctf_e2e.py bots           # bots running: 1 human + 7 bots, restart mid-match
 python scripts/bot_ai.py                 # bots-only games against the real sim
 ```
@@ -209,8 +243,10 @@ All routes are behind the gateway at `/api`. Errors always have the shape
 | GET | `/social/invitations` | Invitations sent to you. |
 | POST | `/social/invitations/{id}/accept` · `/decline` | Accepting leaves your old party in the same transaction. |
 | POST / DELETE | `/matchmaking/queue` | POST `{mode: squad, fill: bool}` (leader only, idempotent). DELETE (any member, idempotent). Queueing again from a finished match is the rematch: it also moves the whole party out of that match. |
-| GET | `/matchmaking/status` | `idle` · `searching` (with live team formation) · `found` · `entered` |
-| POST | `/matchmaking/matches/{id}/ready` · `/enter` · `/leave` | Ready check → enter (needs all ready) → back to hub. |
+| GET | `/matchmaking/status` | `idle` · `searching` (with live team formation) · `found` (the match lobby) · `countdown` · `entered`. A match carries `loadouts` (your team's picks while the lobby is open, everyone's once the match runs) and `lobby_ends_at`. |
+| PUT | `/matchmaking/matches/{id}/loadout` | `{class: ASSAULTER\|GUARDIAN\|ASSASSIN, weapon: ASSAULT_RIFLE\|SHOTGUN\|SNIPER_RIFLE}`. Change it freely until you ready up. `409 LOADOUT_LOCKED` once you are ready or the lobby is closed. |
+| POST | `/matchmaking/matches/{id}/ready` | Needs a stored loadout (`409 LOADOUT_REQUIRED`) and locks it. The last ready starts the 3 s countdown. |
+| POST | `/matchmaking/matches/{id}/leave` | Back to hub. Leaving (declining) before the match starts cancels it for everyone. |
 | GET | `/matchmaking/stats?ids=a,b,…` | Career `matches, wins, losses, kills, deaths, captures, kd, win_rate` per user id (max 50). Any signed-in user can read any player's stats. |
 | GET | `/matchmaking/history?limit=&before=` | Your finished matches, newest first, each with the full scoreboard. Page with `next_before`. |
 
@@ -281,13 +317,16 @@ Party tables reference `auth.users` by foreign key and store **no copies** of us
 // unique partial index {party_id} where status = "WAITING"  → a party cannot queue twice
 
 // matches
-{ match_id, mode, status: "FOUND"|"IN_PROGRESS"|"COMPLETED"|"CANCELLED",
+{ match_id, mode, status: "FOUND"|"COUNTDOWN"|"IN_PROGRESS"|"COMPLETED"|"CANCELLED",
   teams: [ { players: [{id,name,tag}], parties: [{party_id, players: [ids]}] }, {...} ],
-  player_ids, ready: [ids], entered: [ids], left: [ids], created_at, ended_at? }
+  player_ids, ready: [ids], entered: [ids], left: [ids], created_at, ended_at?,
+  loadouts: { <user_id>: { class, weapon, at } },   // filled in the lobby; locked once the player is ready
+  lobby_ends_at,                                    // created_at + READY_TIMEOUT_S (60 s)
+  reason? }                                         // CANCELLED: "player_left" | "lobby_timeout"
 
 // once the game is over, game-service adds (exactly once) to the same document:
 //   result: { winner: "RED"|"BLUE", capturer: user_id, duration_ms, at,
-//             players: [{ id, name, team, outcome: "WIN"|"LOSS", kills, deaths, captures }] }
+//             players: [{ id, name, team, class, weapon, outcome: "WIN"|"LOSS", kills, deaths, captures }] }  // class/weapon absent on old results
 
 // match_events: append-only log, ready for future gameplay events
 { match_id, type: "MATCH_CREATED"|"PLAYER_READY"|"PLAYER_ENTERED"|"PLAYER_LEFT"|"MATCH_COMPLETED"|"MATCH_CANCELLED"
@@ -377,8 +416,8 @@ The gap between the two is closed with **optimistic validation**:
    makes the claim fail, and the partially claimed entries are released. If inserting the
    match document fails, the claimed entries are put back to `WAITING` (a compensating
    action). This avoids needing a MongoDB replica set for multi-document transactions.
-5. A ready check that isn't completed within `READY_TIMEOUT_S` cancels the match, so an
-   abandoned client can't block the other players forever.
+5. A match lobby that isn't completed within `READY_TIMEOUT_S` (default 60 s: everybody picked a loadout and readied) cancels the whole match, so an
+   abandoned client can't block the other players forever. Nobody is given a default loadout and nobody is re-queued.
 
 The result is eventual consistency between the stores with a window of at most one
 matcher tick. A party that changes while queued is dropped from the queue before it could
@@ -398,6 +437,9 @@ unique constraints are the backstop if application code ever forgets a check.
   (at most ~3 s old after a crash); shots in flight and held keys are not persisted.
 - One matchmaking replica: the matcher loop runs in-process. Claims are already
   conditional, but running several replicas would also need a leader lock.
+- Class and weapon balance values are first guesses (see the tables above) and need playtesting.
+- The game socket has no per-connection message rate limit: a client flooding `fire`/`ability` costs the server CPU only (the cooldowns still apply).
+- Ship the frontend and backend together: an old cached bundle cannot pick a loadout, so it cannot ready up and its lobby times out.
 - No MMR, region or latency in matchmaking. The region label in the UI is cosmetic.
 - The activity feed on the home screen is per client and not persisted.
 - Stats count finished matches only and are recomputed on every request (an indexed aggregation). If the

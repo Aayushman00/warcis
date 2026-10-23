@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
-import { token, type MatchDTO } from './api'
+import { token, type ClassId, type MatchDTO, type WeaponId } from './api'
 import type { Player } from './data'
+import { CLASS_INFO, WEAPON_INFO } from './game/classes'
 import './game/hud.css'
 import { Renderer, Timeline, type GMap, type Snapshot } from './game/render'
 import { isMuted, setMuted, sfx, unlockAudio } from './game/sfx'
@@ -12,11 +13,13 @@ import { Scoreboard, type ScoreRow } from './Scoreboard'
    turns snapshot changes into HUD feedback. React only re-renders when HUD data changes;
    per-frame numbers (clock, respawn ring) are written straight to the DOM. */
 
-type Msg = Snapshot | { t: 'hello'; you: string; map: GMap } | { t: 'error'; code: string; message: string } | { t: 'pong'; c: number }
+/** Numbers the server sends once in `hello`; the HUD only draws them (cooldown rings), the server enforces them. */
+type Catalog = { classes: Record<ClassId, { hp: number; ability: string; cooldownMs: number; durationMs: number }> }
+type Msg = Snapshot | { t: 'hello'; you: string; map: GMap; catalog: Catalog } | { t: 'error'; code: string; message: string } | { t: 'pong'; c: number }
 type Who = { name: string; team: Team }
 type FlagHud = { state: 'AT_BASE' | 'CARRIED' | 'DROPPED'; carrier: Who | null; returnAt: number | null }
 type Hud = {
-  me: (Who & { hp: number; alive: boolean; carrying: boolean; killer: Who | null }) | null
+  me: (Who & { hp: number; maxHp: number; cls: ClassId; weapon: WeaponId; alive: boolean; carrying: boolean; killer: Who | null }) | null
   roster: Record<Team, { id: string; alive: boolean; connected: boolean }[]>
   flags: Record<Team, FlagHud>
   ended: boolean
@@ -40,6 +43,7 @@ const KEYS: Record<string, 'up' | 'down' | 'left' | 'right'> = {
 }
 const RECONNECT_FOR_MS = 60_000
 const PING_EVERY_MS = 2000
+const FIRE_SEND_MS = 20
 const INTRO_IF_YOUNGER_MS = 15_000
 const tc = (t: Team) => (t === 'RED' ? 'g-red' : 'g-blue')
 const cap = (t: Team) => t[0] + t.slice(1).toLowerCase()
@@ -69,9 +73,10 @@ function viewSnap(s: Snapshot, w: number, v: View): Snapshot {
   return {
     ...s,
     winner: s.winner && t(s.winner),
-    players: s.players.map((p) => ({ ...p, team: t(p.team), x: x(p.x) })),
+    players: s.players.map((p) => ({ ...p, team: t(p.team), x: p.x === null ? null : x(p.x) })),
     flags: s.flags.map((f) => ({ ...f, team: t(f.team), x: x(f.x) })),
     shots: s.shots.map((o) => ({ ...o, team: t(o.team), x: x(o.x) })),
+    barriers: s.barriers.map((b) => ({ ...b, team: t(b.team), x: v.mirror ? w - b.x - b.w : b.x })), // x is the slab's left edge
   }
 }
 
@@ -89,13 +94,13 @@ function hudOf(s: Snapshot, meId: string): Hud {
     return { state: f.state, carrier: who(f.carrierId), returnAt: f.returnAt }
   }
   return {
-    me: m ? { name: m.name, team: m.team, hp: m.hp, alive: m.alive, carrying: m.carryingFlag, killer: m.alive ? null : who(m.killedBy) } : null,
+    me: m ? { name: m.name, team: m.team, hp: m.hp, maxHp: m.maxHp, cls: m.class, weapon: m.weapon, alive: m.alive, carrying: m.carryingFlag, killer: m.alive ? null : who(m.killedBy) } : null,
     roster,
     flags: { RED: flag('RED'), BLUE: flag('BLUE') },
     ended: s.state === 'ENDED',
     winner: s.winner,
     capturer: s.winner ? who(s.players.find((p) => p.team === s.winner && p.carryingFlag)?.id ?? null) : null,
-    rows: s.players.map((p) => ({ id: p.id, name: p.name, team: p.team, kills: p.kills, deaths: p.deaths, captures: p.captures })),
+    rows: s.players.map((p) => ({ id: p.id, name: p.name, team: p.team, kills: p.kills, deaths: p.deaths, captures: p.captures, cls: p.class })),
   }
 }
 
@@ -153,6 +158,9 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
   const clockEl = useRef<HTMLSpanElement>(null)
   const respawnEl = useRef<HTMLSpanElement>(null)
   const ringEl = useRef<SVGCircleElement>(null)
+  const qEl = useRef<HTMLDivElement>(null)
+  const qTime = useRef<HTMLSpanElement>(null)
+  const catalogRef = useRef<Catalog | null>(null)
   const tl = useRef(new Timeline())
   const rend = useRef<Renderer | null>(null)
   const [map, setMap] = useState<GMap | null>(null)
@@ -180,6 +188,7 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
     let seq = 0
     let introPlayed = false
     let dims = { w: 1200, h: 700 } // replaced by the server map on hello
+    let cursor: { x: number; y: number } | null = null // world coordinates of the mouse, for Q
     const timers: ReturnType<typeof setTimeout>[] = []
     const later = (ms: number, fn: () => void) => void timers.push(setTimeout(fn, ms))
     const held = { up: false, down: false, left: false, right: false }
@@ -188,6 +197,12 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
     const flip = view.mirror
     const sendInput = () => send({ t: 'input', ...held, ...(flip && { left: held.right, right: held.left }) })
     const fire = (p: { x: number; y: number }) => send({ t: 'fire', x: flip ? dims.w - p.x : p.x, y: p.y })
+    /** Q: the class ability, aimed at the cursor like a shot. Whether it can happen at all is the server's call. */
+    const cast = () => {
+      const me0 = tl.current.latest()?.players.find((p) => p.id === me.id)
+      const at = cursor ?? (me0 && me0.x !== null && me0.y !== null ? { x: me0.x + 100, y: me0.y } : null)
+      if (at) send({ t: 'ability', x: flip ? dims.w - at.x : at.x, y: at.y })
+    }
 
     const announce = (title: string, sub: string, team: Team, at: number) => rend.current?.at(at, () => setBanner({ id: ++seq, title, sub, team }))
 
@@ -209,12 +224,16 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
       for (const p of b.players) {
         const q = before.get(p.id)
         if (!q) continue
-        if (p.hp < q.hp) r.at(t, () => (r.hit(p.id, p.x, p.y, q.hp - p.hp, p.team, t), sfx.hit(p.id === me.id)))
-        if (q.alive && !p.alive) {
+        if (p.hp < q.hp && p.x !== null && p.y !== null) {
+          const [px, py] = [p.x, p.y]
+          r.at(t, () => (r.hit(p.id, px, py, q.hp - p.hp, p.team, t), sfx.hit(p.id === me.id)))
+        }
+        if (q.alive && !p.alive && p.x !== null && p.y !== null) {
+          const [px, py] = [p.x, p.y]
           const k = p.killedBy ? byId.get(p.killedBy) : null
           const row: Kill = { id: ++seq, killer: k ? { name: k.name, team: k.team } : null, victim: { name: p.name, team: p.team }, mine: p.id === me.id || k?.id === me.id }
           r.at(t, () => {
-            r.death(p.id, p.x, p.y, p.team, t)
+            r.death(p.id, px, py, p.team, t)
             sfx.death(p.id === me.id)
             setFeed((f) => [...f.slice(-4), row])
             later(5000, () => setFeed((f) => f.filter((x) => x.id !== row.id)))
@@ -225,7 +244,10 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
       for (const s of b.shots) {
         if (known.has(s.id)) continue
         const shooter = byId.get(s.owner)
-        if (shooter) r.at(t - 33, () => (r.shot(shooter.id, shooter.x, shooter.y, s.x - shooter.x, s.y - shooter.y, t - 33), sfx.shoot(shooter.id === me.id)))
+        if (shooter && shooter.x !== null && shooter.y !== null) {
+          const [sx, sy] = [shooter.x, shooter.y]
+          r.at(t - 33, () => (r.shot(shooter.id, sx, sy, s.x - sx, s.y - sy, t - 33), sfx.shoot(shooter.id === me.id)))
+        }
       }
       const whose = (t: Team) => (mine?.team === t ? 'your flag' : `the ${t.toLowerCase()} flag`)
       for (const f of b.flags) {
@@ -284,6 +306,7 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
           tl.current.reset() // fresh timeline after a reconnect: no sliding from stale positions
           const vm = viewMap(m.map, view)
           dims = vm
+          catalogRef.current = m.catalog
           rend.current ??= new Renderer(vm, me.id)
           setMap((old) => old ?? vm)
           setConn('live')
@@ -312,6 +335,7 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
 
     const onKey = (down: boolean) => (e: KeyboardEvent) => {
       unlockAudio()
+      if (down && e.code === 'KeyQ' && !e.repeat) return cast()
       const k = KEYS[e.code]
       if (!k || held[k] === down) return
       e.preventDefault()
@@ -342,9 +366,10 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
     const mm = (e: MouseEvent) => {
       if (!canvas.current || !rend.current) return
       const w = toWorld(e)
+      cursor = w
       if (aim) aim = w
       const mine = tl.current.latest()?.players.find((p) => p.id === me.id)
-      if (mine) rend.current.myAim = Math.atan2(w.y - mine.y, w.x - mine.x) // cosmetic: my weapon follows the cursor
+      if (mine && mine.x !== null && mine.y !== null) rend.current.myAim = Math.atan2(w.y - mine.y, w.x - mine.x) // cosmetic: my weapon follows the cursor
     }
     const mu = (e: MouseEvent) => e.button === 0 && (aim = null)
     window.addEventListener('keydown', kd)
@@ -353,12 +378,14 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
     window.addEventListener('mousedown', md)
     window.addEventListener('mousemove', mm)
     window.addEventListener('mouseup', mu)
+    // While LMB is held, keep sending the aim point. The server's per-weapon cooldown decides which ones
+    // count, so a fast weapon is never throttled by the client (a coarse client interval would round it up).
     const autofire = setInterval(() => {
-      if (aim && Date.now() - lastFire >= 100) {
+      if (aim && Date.now() - lastFire >= FIRE_SEND_MS) {
         lastFire = Date.now()
         fire(aim)
       }
-    }, 50)
+    }, FIRE_SEND_MS)
     const pinger = setInterval(() => send({ t: 'ping', c: performance.now() }), PING_EVERY_MS)
 
     return () => {
@@ -396,6 +423,15 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
       const t = tl.current.renderTime()
       if (clockEl.current) clockEl.current.textContent = clock(s.state === 'ENDED' ? s.elapsed : s.elapsed - (s.now - t))
       const mine = s.players.find((p) => p.id === me.id)
+      if (mine && qEl.current) {
+        // Q cooldown ring + countdown, straight from the server's abilityReadyAt (no React re-render per frame).
+        const total = catalogRef.current?.classes[mine.class]?.cooldownMs ?? 1
+        const left = Math.max(0, (mine.abilityReadyAt ?? 0) - s.now)
+        qEl.current.style.setProperty('--cd', String(Math.min(1, left / total)))
+        qEl.current.classList.toggle('is-ready', left === 0 && mine.alive)
+        qEl.current.classList.toggle('is-active', mine.invisible || mine.dashing || s.barriers.some((b) => b.owner === mine.id))
+        if (qTime.current) qTime.current.textContent = left > 0 ? (left / 1000).toFixed(left < 10_000 ? 1 : 0) : ''
+      }
       if (mine?.respawnAt) {
         const left = Math.max(0, mine.respawnAt - t)
         if (respawnEl.current) respawnEl.current.textContent = (left / 1000).toFixed(1)
@@ -422,7 +458,7 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
     if (!r) return null
     const v = viewOf(match.my_team)
     const vt = (t: Team): Team => (v.swap ? other(t) : t)
-    const rows = r.players.map((p) => ({ id: p.id, name: p.name, team: vt(p.team), kills: p.kills, deaths: p.deaths, captures: p.captures }))
+    const rows = r.players.map((p) => ({ id: p.id, name: p.name, team: vt(p.team), kills: p.kills, deaths: p.deaths, captures: p.captures, cls: p.class }))
     const cap = rows.find((p) => p.id === r.capturer)
     return { winner: vt(r.winner), capturer: cap ? { name: cap.name, team: cap.team } : null, rows }
   })()
@@ -492,7 +528,7 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
 
   const won = final ? final.winner === (myTeam ?? 'BLUE') : null // everyone is shown as BLUE (see viewOf)
   const carrying = !!mine?.carrying && !hud?.ended
-  const hpColor = !mine ? color.hpHigh : mine.hp > 50 ? color.hpHigh : mine.hp > 25 ? color.hpMid : color.hpLow
+  const hpColor = !mine ? color.hpHigh : mine.hp > mine.maxHp / 2 ? color.hpHigh : mine.hp > mine.maxHp / 4 ? color.hpMid : color.hpLow
 
   return (
     <div className="g-root" style={cssVars() as CSSProperties}>
@@ -619,13 +655,15 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
           {mine && <Emblem letter={mine.name[0]?.toUpperCase() ?? '?'} />}
           <div style={{ minWidth: 0 }}>
             <div className="g-me-name">{mine?.name ?? me.name}</div>
-            <div className={`g-me-state ${mine && !mine.alive ? 'is-down' : ''}`}>{mine ? (mine.alive ? `${cap(mine.team)} team` : 'Eliminated') : 'Spectating'}</div>
+            <div className={`g-me-state ${mine && !mine.alive ? 'is-down' : ''}`}>
+              {mine ? (mine.alive ? `${cap(mine.team)} team · ${CLASS_INFO[mine.cls].name} · ${WEAPON_INFO[mine.weapon].name}` : 'Eliminated') : 'Spectating'}
+            </div>
           </div>
           {mine && (
             <div className="g-hp" aria-label={`Health ${mine.hp}`}>
               <span className="g-hp-seg" style={{ ['--hp' as string]: hpColor } as CSSProperties}>
                 {[0, 1, 2, 3].map((i) => (
-                  <i key={i} className={mine.hp >= (i + 1) * 25 ? '' : 'is-empty'} />
+                  <i key={i} className={mine.hp >= ((i + 1) * mine.maxHp) / 4 ? '' : 'is-empty'} />
                 ))}
               </span>
               <span className="g-hp-num">{mine.hp}</span>
@@ -643,6 +681,13 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
         )}
 
         <div className="g-right">
+          {mine && (
+            <div ref={qEl} className="g-q" title={CLASS_INFO[mine.cls].q} aria-label={`${CLASS_INFO[mine.cls].qName}: press Q`}>
+              <span className="g-q-key">Q</span>
+              <span className="g-q-name">{CLASS_INFO[mine.cls].qName}</span>
+              <span ref={qTime} className="g-q-time" />
+            </div>
+          )}
           {carrying && mine && (
             <span className={`g-carry ${tc(other(mine.team))}`}>
               <FlagIcon />

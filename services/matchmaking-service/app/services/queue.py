@@ -1,8 +1,11 @@
 """Queue and match lifecycle on MongoDB.
 
 Queue entry status:  WAITING -> MATCHED | CANCELLED | INVALIDATED
-Match status:        FOUND (ready check) -> COUNTDOWN (everyone ready) -> IN_PROGRESS -> COMPLETED
-                     FOUND | COUNTDOWN -> CANCELLED (ready check timed out, or a player left)
+Match status:        FOUND (match lobby: pick class + weapon, then ready) -> COUNTDOWN (everyone ready)
+                     -> IN_PROGRESS -> COMPLETED
+                     FOUND | COUNTDOWN -> CANCELLED (lobby timed out, or a player left)
+A player can only ready up with a stored loadout, and readying locks it; game-service reads the
+loadouts off the match document when the game starts.
 A finished game gets a `result` (written by game-service) while still IN_PROGRESS; it completes
 once every player has left, either via "Return to hub" or by queueing again (rematch).
 """
@@ -19,9 +22,9 @@ from pymongo.errors import DuplicateKeyError
 from app.db.mongo import events, matches, queue
 from app.services import party_client
 from app.services.packing import TEAM_SIZE, fifo, matchups, pack, unfilled_matchups
-from app.services.stats import result_view
+from app.services.stats import result_view, visible_loadouts
 
-READY_TIMEOUT = timedelta(seconds=int(os.environ.get("READY_TIMEOUT_S", "45")))
+READY_TIMEOUT = timedelta(seconds=int(os.environ.get("READY_TIMEOUT_S", "60")))
 COUNTDOWN = timedelta(seconds=int(os.environ.get("COUNTDOWN_S", "3")))
 PRE_GAME = ["FOUND", "COUNTDOWN"]
 ACTIVE = [*PRE_GAME, "IN_PROGRESS"]
@@ -122,6 +125,8 @@ def match_view(m: dict, user_id: str) -> dict:
         "my_team": mine,
         "ready": m["ready"],
         "entered": m["entered"],
+        "loadouts": visible_loadouts(m, mine),  # enemy picks are hidden until the match starts
+        "lobby_ends_at": m["lobby_ends_at"].isoformat() if m.get("lobby_ends_at") else None,
         "countdown_ends_at": m["countdown_ends_at"].isoformat() if m.get("countdown_ends_at") else None,
         "result": result_view(m),  # set once the game is over; lets a reconnecting client show the scoreboard
     }
@@ -141,7 +146,11 @@ async def status(user_id: str) -> dict:
     if not entry:
         last = await matches.find_one({"player_ids": user_id, "status": "CANCELLED"}, sort=[("created_at", -1)])
         recent = last and now() - last["ended_at"] < timedelta(seconds=10)
-        notice = "Match cancelled: a player left." if recent and last.get("reason") == "player_left" else "Match cancelled: not every player readied up."
+        notice = (
+            "Match cancelled: a player left."
+            if recent and last.get("reason") == "player_left"
+            else "Match cancelled: not every player picked a loadout and readied up."
+        )
         return {"state": "idle", "notice": notice if recent else None}
 
     waiting = await queue.find({"status": "WAITING", "mode": entry["mode"]}).to_list(None)
@@ -180,12 +189,45 @@ async def _own_match(match_id: str, user_id: str) -> dict:
     return m
 
 
-async def ready(match_id: str, user_id: str) -> dict:
-    await _own_match(match_id, user_id)
+def _lobby_open(t: datetime) -> dict:
+    """Filter for a lobby whose deadline has not passed. The matcher only cancels expired lobbies on its next
+    tick, so without this a pick or the last ready could still land after lobby_ends_at and start the match.
+    Lobbies created before lobby_ends_at existed are left to that tick, as before."""
+    return {"status": "FOUND", "$or": [{"lobby_ends_at": {"$gt": t}}, {"lobby_ends_at": {"$exists": False}}]}
+
+
+async def set_loadout(match_id: str, user_id: str, cls: str, weapon: str) -> dict:
+    """Pick (or change) your class and weapon. One conditional update: only while the lobby is open and
+    before you are ready, so a loadout can never change under a ready flag or after the match starts."""
+    await _own_match(match_id, user_id)  # user_id comes from the JWT and is now known to be a player of this match
+    pick = {"class": cls, "weapon": weapon, "at": now()}
     before = await matches.find_one_and_update(
-        {"match_id": match_id, "status": "FOUND"}, {"$addToSet": {"ready": user_id}}, return_document=ReturnDocument.BEFORE
+        {"match_id": match_id, **_lobby_open(pick["at"]), "ready": {"$ne": user_id}},
+        {"$set": {f"loadouts.{user_id}": pick}},
+        return_document=ReturnDocument.BEFORE,
     )
     if not before:
+        raise ApiError(409, "LOADOUT_LOCKED", "Your loadout is locked: you are ready, or the lobby is closed.")
+    was = (before.get("loadouts") or {}).get(user_id) or {}
+    if (was.get("class"), was.get("weapon")) != (cls, weapon):
+        await log(match_id, "LOADOUT_SELECTED", user_id, **{"class": cls, "weapon": weapon})
+    return await status(user_id)
+
+
+async def ready(match_id: str, user_id: str) -> dict:
+    await _own_match(match_id, user_id)
+    # The loadout condition and the ready flag are one atomic update: nobody is ever ready without a loadout.
+    t = now()
+    before = await matches.find_one_and_update(
+        {"match_id": match_id, **_lobby_open(t), f"loadouts.{user_id}": {"$exists": True}},
+        {"$addToSet": {"ready": user_id}},
+        return_document=ReturnDocument.BEFORE,
+    )
+    if not before:
+        m = await _own_match(match_id, user_id)
+        still_open = m["status"] == "FOUND" and (not m.get("lobby_ends_at") or m["lobby_ends_at"].replace(tzinfo=timezone.utc) > t)
+        if still_open and user_id not in (m.get("loadouts") or {}):
+            raise ApiError(409, "LOADOUT_REQUIRED", "Pick a class and weapon before readying up.")
         raise ApiError(409, "MATCH_NOT_READYABLE", "This match is no longer accepting ready checks.")
     if user_id not in before["ready"]:
         await log(match_id, "PLAYER_READY", user_id)
@@ -263,6 +305,7 @@ async def retire_ended(user_ids: list[str]) -> None:
 async def _create_match(mode: str, a: list[dict], b: list[dict]) -> None:
     entries = a + b
     match_id = str(uuid.uuid4())
+    created = now()
     oids = [e["_id"] for e in entries]
     # Claim: conditional update only succeeds for entries still WAITING. If a player
     # cancelled in between, release whatever we did claim and let the next tick retry.
@@ -283,7 +326,9 @@ async def _create_match(mode: str, a: list[dict], b: list[dict]) -> None:
                 "ready": [],
                 "entered": [],
                 "left": [],
-                "created_at": now(),
+                "loadouts": {},  # {user_id: {class, weapon, at}}, filled in the lobby
+                "created_at": created,
+                "lobby_ends_at": created + READY_TIMEOUT,
             }
         )
     except Exception:  # compensate: put entries back in the queue
@@ -294,11 +339,21 @@ async def _create_match(mode: str, a: list[dict], b: list[dict]) -> None:
 
 async def tick() -> None:
     async with _tick_lock:
-        # Expire ready checks nobody completed (closed tab, etc.).
-        expired = matches.find({"status": "FOUND", "created_at": {"$lt": now() - READY_TIMEOUT}})
+        # Expire lobbies nobody completed (closed tab, nobody picked...): the whole match is cancelled.
+        # Lobbies created before lobby_ends_at existed fall back to created_at + READY_TIMEOUT.
+        t = now()
+        expired = matches.find(
+            {
+                "status": "FOUND",
+                "$or": [{"lobby_ends_at": {"$lt": t}}, {"lobby_ends_at": {"$exists": False}, "created_at": {"$lt": t - READY_TIMEOUT}}],
+            }
+        )
         async for m in expired:
-            await matches.update_one({"_id": m["_id"], "status": "FOUND"}, {"$set": {"status": "CANCELLED", "ended_at": now()}})
-            await log(m["match_id"], "MATCH_CANCELLED", reason="ready_timeout")
+            done = await matches.update_one(
+                {"_id": m["_id"], "status": "FOUND"}, {"$set": {"status": "CANCELLED", "ended_at": now(), "reason": "lobby_timeout"}}
+            )
+            if done.modified_count:
+                await log(m["match_id"], "MATCH_CANCELLED", reason="lobby_timeout")
         async for m in matches.find({"status": "COUNTDOWN", "countdown_ends_at": {"$lte": now()}}):
             await _start_if_due(m)
 
