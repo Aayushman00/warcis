@@ -1,3 +1,4 @@
+import type { PlayerStats } from './api'
 export type Status = 'online' | 'away' | 'ingame' | 'offline'
 
 export interface Player {
@@ -31,3 +32,6 @@ export const ago = (t: number) => {
   const s = Math.round((Date.now() - t) / 1000)
   return s < 60 ? 'just now' : `${Math.round(s / 60)}m ago`
 }
+
+/** "3W–1L · 1.25 K/D", or null for a player who has not finished a match. */
+export const statLine = (s?: PlayerStats) => (s && s.matches > 0 ? `${s.wins}W–${s.losses}L · ${s.kd.toFixed(2)} K/D` : null)

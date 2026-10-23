@@ -6,14 +6,19 @@ The roster comes from the match document matchmaking created (teams[0] = RED,
 teams[1] = BLUE). Clients (humans and bots alike) send intents only:
     {"t": "input", "up", "down", "left", "right"}   held keys
     {"t": "fire", "x", "y"}                          aim point in world coordinates
+    {"t": "ability", "x", "y"}                       Q: dash / barrier / invisibility, aimed like a shot
     {"t": "ping", "c"}                               echoed back as {"t": "pong", "c"}
 The server simulates at TICK_HZ and broadcasts {"t": "state", ...} to every client.
 `bot=1` only adds a display label; bots get no other difference.
+Class and weapon are never sent by a client: they come from the `loadouts` the match lobby stored on
+the match document (matchmaking-service). Each team receives its own snapshot, so an invisible
+Assassin's coordinates are never sent to the enemy team.
 
 Persistence: the simulation lives in RAM. Every CHECKPOINT_MS a small snapshot goes to
 MongoDB `game_checkpoints` (one doc per match). On startup, recent PLAYING checkpoints of
 IN_PROGRESS matches are restored and players reconnect into them. On capture the server
-writes `result` onto the match and logs MATCH_ENDED; the match itself is still closed by
+writes `result` (winner plus per-player kills / deaths / captures) onto the match and logs
+MATCH_ENDED and one PLAYER_RESULT per player; the match itself is still closed by
 matchmaking's existing /leave flow ("Return to hub").
 """
 
@@ -26,15 +31,17 @@ from datetime import datetime, timezone
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from pymongo import AsyncMongoClient
+from warcis_common import loadout
 from warcis_common.errors import ApiError
 from warcis_common.security import decode_token
 
-from app.sim import MAP, TEAMS, Game
+from app.sim import CATALOG, MAP, TEAMS, Game
 
 TICK_HZ = 30
 CHECKPOINT_MS = 3000
 RECOVER_WINDOW_S = 600  # on startup, only checkpoints newer than this are restored
 KEEP_ENDED_S = 60  # keep a finished room so late reconnects still see the result screen
+RESULT_ATTEMPTS = 4  # writes of the final result before giving up (the room stays loaded meanwhile)
 IDLE_DROP_S = 120  # nobody connected this long -> checkpoint and unload the room
 
 client = AsyncMongoClient(os.environ["MONGO_URL"], tz_aware=True)
@@ -58,6 +65,10 @@ class Room:
         self.saved_at = 0
         self.saving: asyncio.Task | None = None
 
+    def views(self, t: int) -> dict[int, dict]:
+        """One snapshot per team, built from the same state: what a team may not see is left out here."""
+        return {team: self.game.snapshot(t, self.sockets.keys(), self.bots, team) for team in (0, 1)}
+
 
 # Rooms are in this process's memory (one replica). Checkpoints make a restart survivable.
 rooms: dict[str, Room] = {}
@@ -71,6 +82,23 @@ async def save_checkpoint(match_id: str, doc: dict) -> None:
         )
     except Exception as e:  # next checkpoint retries; the live game never waits on Mongo
         log(f"checkpoint failed for {match_id}: {e!r}")
+
+
+def roster(m: dict) -> list[list[dict]]:
+    """Teams of {id, name, class, weapon} from the match document. The lobby guarantees a valid loadout for
+    every player of a started match; the default only covers matches created before loadouts existed."""
+    picks = m.get("loadouts") or {}
+    out = []
+    for team in m["teams"]:
+        row = []
+        for p in team["players"]:
+            pick = picks.get(p["id"])
+            if pick is not None and not loadout.valid(pick):
+                log(f"match {m['match_id']}: invalid loadout for {p['id']}, using the default")
+                pick = None
+            row.append({**p, **{k: (pick or loadout.DEFAULT_LOADOUT)[k] for k in ("class", "weapon")}})
+        out.append(row)
+    return out
 
 
 def start(room: Room) -> Room:
@@ -96,7 +124,7 @@ async def open_room(match_id: str, user_id: str) -> Room:
         cp = await checkpoints.find_one({"match_id": match_id})
         t = now_ms()
         if cp is None:  # first player in: a brand-new game, checkpointed before anyone can act
-            room = Room(match_id, Game([team["players"] for team in m["teams"]], t))
+            room = Room(match_id, Game(roster(m), t))
             await save_checkpoint(match_id, room.game.checkpoint(t))
             room.saved_at = t
             return start(room)
@@ -150,8 +178,8 @@ async def run(room: Room) -> None:
         while True:
             t = now_ms()
             g.step(t)
-            snap = g.snapshot(t, room.sockets.keys(), room.bots)
-            await asyncio.gather(*(_send(ws, snap) for ws in list(room.sockets.values())))
+            views = room.views(t)
+            await asyncio.gather(*(_send(ws, views[g.players[uid].team]) for uid, ws in list(room.sockets.items())))
             if g.ended:
                 await _record_result(room)
                 await save_checkpoint(room.match_id, g.checkpoint(t))
@@ -170,17 +198,29 @@ async def run(room: Room) -> None:
 
 
 async def _record_result(room: Room) -> None:
+    """Write the final per-player result onto the match document and into match_events.
+
+    `result` is set once (the `$exists: False` guard): the match document is what history and
+    profile stats are computed from, the events are the append-only audit trail of the same fact.
+    """
     g = room.game
-    winner = TEAMS[g.winner]
-    try:
-        await matches.update_one(
-            {"match_id": room.match_id}, {"$set": {"result": {"winner": winner, "capturer": g.capturer, "at": datetime.now(timezone.utc)}}}
-        )
-        await events.insert_one(
-            {"match_id": room.match_id, "type": "MATCH_ENDED", "user_id": g.capturer, "at": datetime.now(timezone.utc), "data": {"winner": winner}}
-        )
-    except Exception as e:  # the result was already broadcast; don't kill the room over a DB write
-        log(f"could not record result for {room.match_id}: {e!r}")
+    result = {**g.result(g.last), "at": datetime.now(timezone.utc)}  # g.last = the capture tick, not when the write happens
+    for attempt in range(1, RESULT_ATTEMPTS + 1):
+        try:
+            done = await matches.update_one({"match_id": room.match_id, "result": {"$exists": False}}, {"$set": {"result": result}})
+            if done.modified_count:
+                at = result["at"]
+                await events.insert_many(
+                    [{"match_id": room.match_id, "type": "MATCH_ENDED", "user_id": g.capturer, "at": at,
+                      "data": {"winner": result["winner"], "duration_ms": result["duration_ms"]}}]
+                    + [{"match_id": room.match_id, "type": "PLAYER_RESULT", "user_id": p["id"], "at": at,
+                        "data": {k: p[k] for k in ("team", "class", "weapon", "outcome", "kills", "deaths", "captures")}}
+                       for p in result["players"]]
+                )
+            return
+        except Exception as e:  # the result was already broadcast; retry briefly, never kill the room over a DB write
+            log(f"could not record result for {room.match_id} (attempt {attempt}): {e!r}")
+            await asyncio.sleep(attempt)
 
 
 @asynccontextmanager
@@ -214,14 +254,14 @@ async def play(ws: WebSocket, match_id: str, token: str = "", bot: int = 0):
     old = room.sockets.get(me.id)
     if old:  # same player reconnected (refresh / second tab): newest socket wins
         await old.close()
-    await ws.send_json({"t": "hello", "you": me.id, "map": MAP})
+    await ws.send_json({"t": "hello", "you": me.id, "map": MAP, "catalog": CATALOG})
     room.sockets[me.id] = ws
     if bot:
         room.bots.add(me.id)
     g = room.game
     # Current state right away: a finished room no longer ticks, and a late joiner (or a
     # reconnect) should see the result / the arena without waiting for the next broadcast.
-    await _send(ws, g.snapshot(now_ms(), room.sockets.keys(), room.bots))
+    await _send(ws, room.views(now_ms())[g.players[me.id].team])
     try:
         while True:
             msg = await ws.receive_json()
@@ -233,6 +273,10 @@ async def play(ws: WebSocket, match_id: str, token: str = "", bot: int = 0):
                 x, y = msg.get("x"), msg.get("y")
                 if isinstance(x, (int, float)) and isinstance(y, (int, float)) and math.isfinite(x) and math.isfinite(y):
                     g.fire(me.id, x, y, now_ms())
+            elif msg.get("t") == "ability":
+                x, y = msg.get("x"), msg.get("y")
+                if isinstance(x, (int, float)) and isinstance(y, (int, float)) and math.isfinite(x) and math.isfinite(y):
+                    g.ability(me.id, x, y, now_ms())
             elif msg.get("t") == "ping" and isinstance(msg.get("c"), (int, float)):
                 await _send(ws, {"t": "pong", "c": msg["c"]})  # client measures round-trip time
     except (WebSocketDisconnect, ValueError, RuntimeError):

@@ -3,10 +3,12 @@
     python scripts/e2e.py            (stack must be running; API_URL defaults to localhost:8000/api)
 
 Uses fresh random usernames each run, so it is safe to re-run against a live database.
+Set E2E_READY_TIMEOUT_S to the stack's READY_TIMEOUT_S (a small value such as 8) to also check the lobby timeout.
 Assumes nobody else is queued (stop the demo bots first: `docker compose stop bots`,
 their queue entries expire once their heartbeat is older than PRESENCE_TIMEOUT_S).
 """
 
+import os
 import secrets
 import time
 
@@ -128,18 +130,56 @@ print("  ok  match found: [4 premade] vs [2 + 1 + 1]")
 everyone = (a, b, c, d, e, f, g, h)
 mid = m["match_id"]
 assert m["ready"] == [] and m["status"] == "FOUND", "nobody is auto-ready"
+assert m["loadouts"] == {} and m["lobby_ends_at"], "an empty lobby with a server-side deadline"
 time.sleep(1.5)
 assert a.status()["state"] == "found", "match must not start by itself"
+
+print("match lobby")
+LOADOUT = f"/matchmaking/matches/{mid}/loadout"
+pick = lambda c, w: {"class": c, "weapon": w}  # noqa: E731
+expect("LOADOUT_REQUIRED", a.call, "POST", f"/matchmaking/matches/{mid}/ready")
+print("  ok  ready without a loadout is refused")
+expect("INVALID_REQUEST", a.call, "PUT", LOADOUT, pick("WIZARD", "SHOTGUN"))
+expect("INVALID_REQUEST", a.call, "PUT", LOADOUT, pick("GUARDIAN", "BAZOOKA"))
+expect("INVALID_REQUEST", a.call, "PUT", LOADOUT, {"class": "GUARDIAN"})
+zed = user("zed")  # an outsider
+expect("MATCH_NOT_FOUND", zed.call, "PUT", LOADOUT, pick("GUARDIAN", "SHOTGUN"))
+assert a.status()["match"]["loadouts"] == {}, "a rejected pick must not be stored"
+print("  ok  invalid picks and outsiders are rejected, nothing stored")
+a.call("PUT", LOADOUT, pick("ASSASSIN", "SNIPER_RIFLE"))
+st = a.call("PUT", LOADOUT, pick("GUARDIAN", "SHOTGUN"))  # freely changeable until ready; the last pick wins
+assert st["state"] == "found" and st["match"]["loadouts"][a.me["id"]] == pick("GUARDIAN", "SHOTGUN")
+for x in (b, c, d):  # duplicates on a team are fine: the whole premade is Guardian + Shotgun
+    x.call("PUT", LOADOUT, pick("GUARDIAN", "SHOTGUN"))
+assert set(b.status()["match"]["loadouts"]) == {a.me["id"], b.me["id"], c.me["id"], d.me["id"]}, "teammates see each other's picks"
+for x, (cls, w) in zip((e, f, g, h), (("ASSAULTER", "ASSAULT_RIFLE"), ("ASSASSIN", "SNIPER_RIFLE"), ("ASSAULTER", "SHOTGUN"), ("GUARDIAN", "ASSAULT_RIFLE"))):
+    x.call("PUT", LOADOUT, pick(cls, w))
+theirs = {x.me["id"] for x in (e, f, g, h)}
+assert not theirs & set(a.status()["match"]["loadouts"]), "enemy picks must stay hidden in the lobby"
+assert not {x.me["id"] for x in (a, b, c, d)} & set(e.status()["match"]["loadouts"]), "enemy picks must stay hidden in the lobby"
+print("  ok  picks change freely, duplicates allowed, teammates see them, the enemy team does not")
+
 for n, x in enumerate(everyone, 1):
     st = x.call("POST", f"/matchmaking/matches/{mid}/ready")
+    if n == 1:
+        expect("LOADOUT_LOCKED", a.call, "PUT", LOADOUT, pick("ASSAULTER", "ASSAULT_RIFLE"))
+        assert a.status()["match"]["loadouts"][a.me["id"]] == pick("GUARDIAN", "SHOTGUN"), "readying locks the loadout"
+        print("  ok  readying locks the loadout")
     if n < len(everyone):
         assert st["state"] == "found" and len(st["match"]["ready"]) == n, "not started until ALL ready"
         assert len(everyone[-1].status()["match"]["ready"]) == n  # other clients see it (server-persisted)
 assert st["state"] == "countdown" and st["match"]["countdown_ends_at"], "last ready starts the countdown"
 expect("MATCH_NOT_READYABLE", a.call, "POST", f"/matchmaking/matches/{mid}/ready")
+expect("LOADOUT_LOCKED", e.call, "PUT", LOADOUT, pick("ASSAULTER", "ASSAULT_RIFLE"))  # also locked during the countdown
+during = a.status()
+if during["state"] == "countdown":  # a 3 s window: the enemy's picks are still hidden
+    assert not theirs & set(during["match"]["loadouts"]), "enemy picks hidden during the countdown"
 wait_for(a.status, lambda s: s["state"] == "entered", timeout=8)
 assert all(x.status()["state"] == "entered" for x in everyone)
-expect("MATCH_NOT_FOUND", user("zed").call, "POST", f"/matchmaking/matches/{mid}/ready")
+for x in (a, e):  # revealed once the match starts
+    assert len(x.status()["match"]["loadouts"]) == 8, "both teams' loadouts are visible once the match is running"
+expect("LOADOUT_LOCKED", e.call, "PUT", LOADOUT, pick("ASSAULTER", "ASSAULT_RIFLE"))
+expect("MATCH_NOT_FOUND", zed.call, "POST", f"/matchmaking/matches/{mid}/ready")
 for x in everyone:
     x.call("POST", f"/matchmaking/matches/{m['match_id']}/leave")
 assert a.status()["state"] == "idle"
@@ -166,10 +206,50 @@ l.call("POST", "/matchmaking/queue", {"mode": "squad", "fill": False})
 m2.call("POST", "/matchmaking/queue", {"mode": "squad", "fill": False})
 found = wait_for(l.status, lambda s: s["state"] == "found")["match"]
 assert sorted(len(t["players"]) for t in found["teams"]) == [1, 1]
+l.call("PUT", f"/matchmaking/matches/{found['match_id']}/loadout", pick("ASSASSIN", "SHOTGUN"))
 l.call("POST", f"/matchmaking/matches/{found['match_id']}/ready")
 m2.call("POST", f"/matchmaking/matches/{found['match_id']}/leave")  # leaving during the ready check voids it
 assert m2.status()["state"] == "idle"
 assert wait_for(l.status, lambda s: s["state"] == "idle")["notice"]
 print("  ok  fill off: two solo parties matched as-is, never combined")
+
+if os.environ.get("E2E_READY_TIMEOUT_S"):
+    wait = int(os.environ["E2E_READY_TIMEOUT_S"])
+    print(f"lobby timeout ({wait} s)")
+    p, q = user("pat"), user("quin")
+    p.call("POST", "/matchmaking/queue", {"mode": "squad", "fill": False})
+    q.call("POST", "/matchmaking/queue", {"mode": "squad", "fill": False})
+    lobby = wait_for(p.status, lambda s: s["state"] == "found")["match"]
+    p.call("PUT", f"/matchmaking/matches/{lobby['match_id']}/loadout", pick("GUARDIAN", "SHOTGUN"))
+    p.call("POST", f"/matchmaking/matches/{lobby['match_id']}/ready")  # quin never picks
+    time.sleep(wait + 3)
+    for x in (p, q):
+        s = x.status()
+        assert s["state"] == "idle", f"expected the whole match cancelled, got {s['state']}"  # not re-queued, not started
+    assert "loadout" in p.status()["notice"] or "loadout" in q.status()["notice"]
+    expect("MATCH_NOT_READYABLE", q.call, "POST", f"/matchmaking/matches/{lobby['match_id']}/ready")
+    print("  ok  an incomplete lobby cancels the whole match: no defaults assigned, nobody re-queued")
+
+if os.environ.get("E2E_LOBBY_DEADLINE"):  # needs docker compose: moves the deadline in Mongo directly
+    import subprocess
+
+    print("lobby deadline (no ready or pick lands after lobby_ends_at, even before the matcher's next tick)")
+    p, q = user("rhea"), user("sol")
+    p.call("POST", "/matchmaking/queue", {"mode": "squad", "fill": False})
+    q.call("POST", "/matchmaking/queue", {"mode": "squad", "fill": False})
+    lobby = wait_for(p.status, lambda s: s["state"] == "found")["match"]
+    mid = lobby["match_id"]
+    for x in (p, q):
+        x.call("PUT", f"/matchmaking/matches/{mid}/loadout", pick("GUARDIAN", "SHOTGUN"))
+    p.call("POST", f"/matchmaking/matches/{mid}/ready")
+    js = f'db.getSiblingDB(process.env.MONGO_DB || "warcis").matches.updateOne({{match_id: "{mid}", status: "FOUND"}}, {{$set: {{lobby_ends_at: new Date(Date.now() - 200)}}}})'
+    subprocess.run(["docker", "compose", "exec", "-T", "mongodb", "sh", "-c",
+                    f'mongosh --quiet -u "$MONGO_INITDB_ROOT_USERNAME" -p "$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin --eval \'{js}\''],
+                   check=True, capture_output=True)
+    expect("MATCH_NOT_READYABLE", q.call, "POST", f"/matchmaking/matches/{mid}/ready")
+    expect("LOADOUT_LOCKED", q.call, "PUT", f"/matchmaking/matches/{mid}/loadout", pick("ASSASSIN", "SHOTGUN"))
+    for x in (p, q):
+        assert wait_for(x.status, lambda s: s["state"] == "idle")["state"] == "idle"  # cancelled by the tick, never started
+    print("  ok  an expired lobby refuses the last ready and any pick, then is cancelled as a whole")
 
 print("\nALL E2E CHECKS PASSED")
