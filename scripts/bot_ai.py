@@ -14,7 +14,7 @@ Priorities (first that applies wins):
 Shooting runs alongside movement: nearest visible enemy, after a short reaction delay,
 with a little aim error. The fire pace and range follow the bot's own weapon, and Q is used the way
 its class is meant to be: a dash to escape with the flag, a barrier against an incoming enemy, a cloak
-on the way to the enemy flag. Invisible enemies arrive without coordinates and are simply not seen.
+on the way to the enemy flag or to ambush a carrier. Invisible enemies arrive without coordinates and are simply not seen.
 """
 
 import math
@@ -186,7 +186,12 @@ class Brain:
                 e = min(near, key=lambda e: math.dist(pos, (e["x"], e["y"])))
                 return [{"t": "ability", "x": e["x"], "y": e["y"]}]
         elif kind == "ASSASSIN":
-            if not me["carryingFlag"] and attacker and enemy_flag["state"] != "CARRIED" and math.dist(pos, (enemy_flag["x"], enemy_flag["y"])) < 650:
+            # Cloak to sneak up on the enemy flag (attacker), to ambush our flag's carrier or an enemy
+            # closing in on a defender, or to slip away when hurt. Defenders used to never cloak at all.
+            steal = attacker and enemy_flag["state"] != "CARRIED" and math.dist(pos, (enemy_flag["x"], enemy_flag["y"])) < 650
+            ambush = (own["state"] == "CARRIED" and math.dist(pos, (own["x"], own["y"])) < 450) or (near and not attacker)
+            hurt = near and me["hp"] <= 0.4 * me.get("maxHp", 100)
+            if not me["carryingFlag"] and (steal or ambush or hurt):
                 return [{"t": "ability", "x": pos[0], "y": pos[1]}]
         return []
 
@@ -283,6 +288,8 @@ if __name__ == "__main__":  # self-check against the real map/rules: python scri
         g, t, seen = play(n, seed=n)
         assert seen["fire"] > 0 and seen["stolen"] > 0 and seen["deaths"] > 0, seen
         assert g.ended, f"{n}v{n} bots-only match did not finish in time"
+        on_field = {p.pclass for p in g.players.values()}
+        assert all(seen["q"][c] for c in on_field), f"{n}v{n}: a class on the field never used Q: {seen['q']}"
         used = {c: used[c] + seen["q"][c] for c in CLASS}
         result = f"{TEAMS[g.winner]} won" if g.winner is not None else "tie"
         print(f"{n}v{n} bots: {result} after {t / 1000:.0f}s game time, {seen['fire']} shots, {seen['deaths']} deaths, flag held {seen['stolen']} samples, Q {seen['q']}")

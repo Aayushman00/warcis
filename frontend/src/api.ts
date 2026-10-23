@@ -133,6 +133,7 @@ export interface PlayerStats {
   matches: number
   wins: number
   losses: number
+  ties: number
   kills: number
   deaths: number
   captures: number

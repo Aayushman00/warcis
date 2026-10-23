@@ -100,7 +100,7 @@ export function Profile({ me, stats }: { me: Player; stats?: PlayerStats }) {
           </div>
         </div>
         <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-          <Tile label="Matches" value={s?.matches ?? '–'} />
+          <Tile label="Matches" value={s?.matches ?? '–'} sub={s?.ties ? `${s.ties} tied` : undefined} />
           <Tile label="Wins" value={s?.wins ?? '–'} tone="text-online" />
           <Tile label="Losses" value={s?.losses ?? '–'} tone="text-foe" />
           <Tile label="Win rate" value={s ? pct(s.win_rate) : '–'} />

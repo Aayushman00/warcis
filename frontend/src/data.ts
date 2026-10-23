@@ -34,4 +34,4 @@ export const ago = (t: number) => {
 }
 
 /** "3W–1L · 1.25 K/D", or null for a player who has not finished a match. */
-export const statLine = (s?: PlayerStats) => (s && s.matches > 0 ? `${s.wins}W–${s.losses}L · ${s.kd.toFixed(2)} K/D` : null)
+export const statLine = (s?: PlayerStats) => (s && s.matches > 0 ? `${s.wins}W–${s.losses}L${s.ties ? `–${s.ties}T` : ''} · ${s.kd.toFixed(2)} K/D` : null)

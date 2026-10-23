@@ -103,7 +103,7 @@ function FriendRow({ c, f, compact }: { c: Ctx; f: Player; compact?: boolean }) 
         <p className={`truncate text-xs ${f.status === 'ingame' ? 'text-ingame' : joined ? 'text-ally' : 'text-ink-400'}`}>
           {statusText(c, f)}
           {record && (
-            <span className="text-ink-400" title="Wins–losses and kill/death ratio">
+            <span className="text-ink-400" title="Wins–losses(–ties) and kill/death ratio">
               {' · '}
               {record}
             </span>
