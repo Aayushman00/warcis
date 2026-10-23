@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
-import type { ClassId, Loadout, MatchDTO, MMStatus, QPlayer, QueueDTO, TeamDTO, WeaponId } from './api'
+import type { Loadout, MatchDTO, MMStatus, QPlayer, QueueDTO, TeamDTO } from './api'
 import { MAX_PARTY, type Player } from './data'
 import { Game, type Rematch } from './Game'
-import { CLASS_IDS, CLASS_INFO, drawAvatar, WEAPON_IDS, WEAPON_INFO } from './game/classes'
-import { team as TC } from './game/tokens'
+import { BUILD, CLASS_IDS, CLASS_INFO, WEAPON_IDS, WEAPON_INFO } from './game/classes'
+import { sfx } from './game/sfx'
+import { Armory, ClassAvatar, HiddenAvatar } from './Loadout'
 import { Avatar, Icon } from './ui'
 
 type Group = { label: string; players: QPlayer[]; mine?: boolean }
@@ -126,21 +127,6 @@ function Searching({ q, me, onCancel }: { q: QueueDTO; me: Player; onCancel: () 
   )
 }
 
-/** A class silhouette on a small canvas: the same drawing the arena uses, so the lobby shows what you will see in the match. */
-function ClassAvatar({ cls, side = 'ally', size = 56 }: { cls: ClassId; side?: 'ally' | 'foe'; size?: number }) {
-  const ref = useRef<HTMLCanvasElement>(null)
-  useEffect(() => {
-    const c = ref.current
-    const ctx = c?.getContext('2d')
-    if (!c || !ctx) return
-    const dpr = window.devicePixelRatio || 1
-    c.width = c.height = size * dpr
-    ctx.setTransform(dpr, 0, 0, dpr, size * dpr / 2, size * dpr / 2)
-    drawAvatar(ctx, cls, side === 'ally' ? TC.BLUE : TC.RED, size * 0.3)
-  }, [cls, side, size])
-  return <canvas ref={ref} style={{ width: size, height: size }} aria-label={CLASS_INFO[cls].name} role="img" />
-}
-
 function GroupBox({
   g,
   side,
@@ -177,17 +163,27 @@ function GroupBox({
               )}
             </div>
             <span className="w-full truncate text-center text-xs font-semibold">{p.name}</span>
-            {loadouts && side === 'ally' && (
+            {loadouts && (
               <span className="flex w-full flex-col items-center gap-0.5 text-center text-[10px] text-ink-300">
                 {loadouts[p.id] ? (
                   <>
-                    <ClassAvatar cls={loadouts[p.id].class} size={36} />
-                    <span className="w-full truncate">
-                      {CLASS_INFO[loadouts[p.id].class].name} · {WEAPON_INFO[loadouts[p.id].weapon].name}
+                    <ClassAvatar key={loadouts[p.id].class + loadouts[p.id].weapon} cls={loadouts[p.id].class} weapon={loadouts[p.id].weapon} side={side} size={44} />
+                    <span className={`w-full truncate font-display text-[11px] font-bold tracking-[0.14em] uppercase ${side === 'ally' ? 'text-ally' : 'text-foe'}`}>
+                      {BUILD[loadouts[p.id].class][loadouts[p.id].weapon]}
+                    </span>
+                    <span className="w-full truncate text-ink-400" title={`${CLASS_INFO[loadouts[p.id].class].name} · ${WEAPON_INFO[loadouts[p.id].weapon].name}`}>
+                      {CLASS_INFO[loadouts[p.id].class].short} · {WEAPON_INFO[loadouts[p.id].weapon].name}
                     </span>
                   </>
+                ) : side === 'foe' ? (
+                  <>
+                    <HiddenAvatar size={44} />
+                    <span className="text-ink-400">Hidden</span>
+                  </>
                 ) : (
-                  <span className="text-ink-400">Choosing…</span>
+                  <span className="grid h-[44px] place-items-center text-ink-400">
+                    <span className="animate-pulse">Choosing…</span>
+                  </span>
                 )}
               </span>
             )}
@@ -201,6 +197,23 @@ function GroupBox({
       </div>
     </div>
   )
+}
+
+const BUILD_KEY = 'warcis.lastBuild'
+function lastBuild(): Loadout | null {
+  try {
+    const v = JSON.parse(localStorage.getItem(BUILD_KEY) ?? 'null')
+    return v && CLASS_IDS.includes(v.class) && WEAPON_IDS.includes(v.weapon) ? { class: v.class, weapon: v.weapon } : null
+  } catch {
+    return null // private mode or a corrupt value: just start empty
+  }
+}
+function rememberBuild(l: Loadout) {
+  try {
+    localStorage.setItem(BUILD_KEY, JSON.stringify(l))
+  } catch {
+    /* private mode */
+  }
 }
 
 const revealed = new Set<string>() // "Match found" is a short client-side reveal, shown once per match (the server has no such step)
@@ -236,16 +249,29 @@ function Lobby({
   }, [match.match_id, reveal])
 
   const saved = match.loadouts[me.id] as Loadout | undefined // what the server holds for me (survives a refresh)
-  const [draft, setDraft] = useState<Partial<Loadout>>({ class: saved?.class, weapon: saved?.weapon })
   const iAmReady = match.ready.includes(me.id)
   const locked = iAmReady || match.status !== 'FOUND'
+  // No pick on the server yet: start from the build this player used last time (still sent and confirmed like any pick).
+  const [last] = useState(() => (saved || locked ? null : lastBuild()))
+  const [draft, setDraft] = useState<Partial<Loadout>>(() => ({ class: saved?.class ?? last?.class, weapon: saved?.weapon ?? last?.weapon }))
   const confirmed = !!saved && saved.class === draft.class && saved.weapon === draft.weapon
   const choose = (pick: Partial<Loadout>) => {
     if (locked) return
     const next = { ...draft, ...pick }
     setDraft(next)
-    if (next.class && next.weapon) onLoadout(match.match_id, { class: next.class, weapon: next.weapon })
+    if (next.class && next.weapon) {
+      onLoadout(match.match_id, { class: next.class, weapon: next.weapon })
+      rememberBuild({ class: next.class, weapon: next.weapon })
+    }
   }
+  useEffect(() => {
+    if (last) onLoadout(match.match_id, last)
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  const wasReady = useRef(iAmReady)
+  useEffect(() => {
+    if (iAmReady && !wasReady.current) sfx.lockIn()
+    wasReady.current = iAmReady
+  }, [iAmReady])
 
   const left = counting ? Math.max(0, Math.ceil((Date.parse(match.countdown_ends_at!) - now) / 1000)) : 0
   const closesIn = match.lobby_ends_at && match.status === 'FOUND' ? Math.max(0, Math.ceil((Date.parse(match.lobby_ends_at) - now) / 1000)) : null
@@ -273,11 +299,6 @@ function Lobby({
       </div>
     </div>
   )
-
-  const card = (on: boolean) =>
-    `rounded-xl border p-3 text-left transition disabled:cursor-not-allowed ${
-      on ? 'border-gold/70 bg-gold/[0.08]' : 'border-white/10 bg-white/[0.03] hover:border-white/25 disabled:hover:border-white/10'
-    } ${locked && !on ? 'opacity-40' : ''}`
 
   if (reveal)
     return (
@@ -310,38 +331,16 @@ function Lobby({
         {team('foe', theirs)}
       </div>
 
-      <div className="relative mt-8 grid gap-6 lg:grid-cols-2" aria-label="Choose your class and weapon">
-        <div>
-          <p className="label mb-2">Class</p>
-          <div className="grid gap-2 sm:grid-cols-3">
-            {CLASS_IDS.map((id) => (
-              <button key={id} onClick={() => choose({ class: id })} disabled={locked} className={card(draft.class === id)} aria-pressed={draft.class === id}>
-                <span className="flex items-center gap-2">
-                  <ClassAvatar cls={id} size={44} />
-                  <span>
-                    <span className="block font-display text-base font-bold tracking-wider uppercase">{CLASS_INFO[id].name}</span>
-                    <span className="block text-[11px] text-ink-400">{CLASS_INFO[id].traits}</span>
-                  </span>
-                </span>
-                <span className="mt-2 block text-xs text-ink-300">
-                  <b className="text-gold">Q · {CLASS_INFO[id].qName}.</b> {CLASS_INFO[id].q}
-                </span>
-              </button>
-            ))}
-          </div>
-        </div>
-        <div>
-          <p className="label mb-2">Weapon</p>
-          <div className="grid gap-2 sm:grid-cols-3">
-            {WEAPON_IDS.map((id: WeaponId) => (
-              <button key={id} onClick={() => choose({ weapon: id })} disabled={locked} className={card(draft.weapon === id)} aria-pressed={draft.weapon === id}>
-                <span className="block font-display text-base font-bold tracking-wider uppercase">{WEAPON_INFO[id].name}</span>
-                <span className="mt-1 block text-xs text-ink-300">{WEAPON_INFO[id].pitch}</span>
-              </button>
-            ))}
-          </div>
-          <p className="mt-2 text-[11px] text-ink-400">Any class can carry any weapon. Readying up locks your choice.</p>
-        </div>
+      <div className="relative mt-8">
+        <Armory
+          cls={draft.class}
+          weapon={draft.weapon}
+          locked={locked}
+          canReady={!iAmReady && confirmed}
+          onPick={choose}
+          onReady={() => onReady(match.match_id)}
+          restored={!!last && draft.class === last.class && draft.weapon === last.weapon}
+        />
       </div>
 
       <div className="relative mt-8 flex flex-col items-center gap-3">
@@ -375,9 +374,10 @@ function Lobby({
               <button
                 onClick={() => onReady(match.match_id)}
                 disabled={iAmReady || !confirmed}
-                className={`py-3.5 text-base ${iAmReady ? 'btn-ghost font-display tracking-[0.12em] uppercase !border-online/50 !text-online disabled:opacity-100' : 'btn-gold disabled:opacity-40'}`}
+                className={`py-3.5 text-base ${iAmReady ? 'btn-ghost font-display tracking-[0.12em] uppercase !border-online/50 !text-online disabled:opacity-100' : `btn-gold disabled:opacity-40 ${confirmed ? 'animate-glow' : ''}`}`}
               >
-                {iAmReady && <Icon name="check" />} Ready
+                {iAmReady ? <Icon name="check" /> : null} {iAmReady ? 'Locked in' : 'Ready'}
+                {!iAmReady && confirmed && <kbd className="ml-1 rounded border border-ink-950/30 px-1 font-display text-[10px]">R</kbd>}
               </button>
               <button
                 onClick={() => onLeave(match.match_id)}

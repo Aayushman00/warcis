@@ -3,7 +3,7 @@
    snapshots ~INTERP_MS in the past, smoothly. Colors come from tokens.ts. */
 
 import type { ClassId, DecidedBy, WeaponId } from '../api'
-import { drawAvatar } from './classes'
+import { drawAvatar, drawWeapon, gunOf } from './classes'
 import { alpha, color, font, team as TC, type Team } from './tokens'
 
 export type { Team }
@@ -481,7 +481,7 @@ export class Renderer {
         ctx.save()
         ctx.globalAlpha = dim * (0.32 - i * 0.07)
         ctx.translate(-i * 12, 0)
-        drawAvatar(ctx, p.class, c, R)
+        drawAvatar(ctx, p.class, c, R, 1, t)
         ctx.restore()
       }
     }
@@ -495,17 +495,10 @@ export class Renderer {
     }
     // weapon (with recoil): the silhouette tells the rifle, shotgun and sniper apart
     const recoil = Math.max(0, 1 - (t - a.shotAt) / 90) * 4
-    const gun = p.weapon === 'SHOTGUN' ? { len: R + 1, w: 9 } : p.weapon === 'SNIPER_RIFLE' ? { len: R + 20, w: 4.4 } : { len: R + 6, w: 7 }
-    ctx.fillStyle = '#0B1017'
-    ctx.beginPath()
-    ctx.roundRect(R * 0.2 - recoil, -gun.w / 2, gun.len, gun.w, 2)
-    ctx.fill()
-    ctx.fillStyle = '#3A4557'
-    ctx.fillRect(R * 0.2 - recoil + 2, -gun.w / 2, gun.len - 4, 2)
-    if (p.weapon === 'SNIPER_RIFLE') ctx.fillRect(R * 0.2 + 6 - recoil, -gun.w / 2 - 3, 8, 3) // scope
-    if (p.weapon === 'SHOTGUN') ctx.fillRect(R * 0.2 + 4 - recoil, -1, gun.len - 6, 2) // second bore
+    const gun = gunOf(p.weapon, R)
+    drawWeapon(ctx, p.weapon, c, R, recoil)
     // body: the class silhouette in the team's colors
-    drawAvatar(ctx, p.class, c, R, moving ? 1 : 1 + Math.sin(t / 420) * 0.025)
+    drawAvatar(ctx, p.class, c, R, moving ? 1 : 1 + Math.sin(t / 420) * 0.025, t)
     // muzzle flash
     if (t - a.shotAt < 70) {
       const m = gun.len + R * 0.2

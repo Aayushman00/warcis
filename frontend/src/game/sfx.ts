@@ -81,6 +81,22 @@ export const sfx = {
     tone(784, 0.1, { type: 'sine', vol: 0.09 })
     tone(523, 0.16, { type: 'sine', vol: 0.09, delay: 0.1 })
   },
+  // ── match lobby ──
+  hover() {
+    tone(1320, 0.025, { type: 'sine', vol: 0.018 })
+  },
+  select() {
+    tone(660, 0.07, { type: 'triangle', vol: 0.07, to: 990 })
+    tone(1320, 0.09, { type: 'sine', vol: 0.035, delay: 0.05 })
+  },
+  equip() {
+    noise(0.04, 0.12)
+    tone(240, 0.08, { type: 'square', vol: 0.04, to: 520, delay: 0.03 })
+  },
+  lockIn() {
+    noise(0.05, 0.16)
+    ;[392, 523, 784, 1047].forEach((f, i) => tone(f, 0.16, { type: 'triangle', vol: 0.09, delay: 0.04 + i * 0.06 }))
+  },
   win(won: boolean) {
     const notes = won ? [523, 659, 784, 1047] : [440, 392, 330, 262]
     notes.forEach((f, i) => tone(f, 0.22, { type: 'triangle', vol: 0.12, delay: i * 0.14 }))
