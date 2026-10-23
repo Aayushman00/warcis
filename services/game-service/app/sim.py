@@ -1,7 +1,7 @@
 """Capture The Flag simulation. Pure logic: no I/O, time is passed in (ms), so the
 server stays authoritative and the rules are testable. Self-check: python -m app.sim
 
-Team 0 = RED (left), team 1 = BLUE (right). First valid capture ends the match.
+Team 0 = RED (left), team 1 = BLUE (right). A capture scores a round. First to ROUNDS_TO_WIN, or the higher score at MATCH_MS, wins; equal = tie.
 
 Every player has a class (HP, one Q ability) and a weapon (fire rate, damage, range), chosen
 independently in the match lobby and read from the match document. Class and weapon ids are the
@@ -20,6 +20,9 @@ RESPAWN_MS = 3000
 FLAG_RETURN_MS = 10_000
 TOUCH = PLAYER_R + 12  # player-to-flag pickup distance
 BASE_R = 60
+ROUNDS_TO_WIN = 3
+MATCH_MS = 600_000
+INTERMISSION_MS = 4000  # frozen pause after a non-final capture, then the arena resets
 MOVE_STEP = PLAYER_R / 2  # a dash never advances more than this between wall checks
 # Walking keeps its pre-dash behaviour: one wall check per normal tick (220 px/s * 33 ms = 7.3 px), split only on a
 # long tick so it still cannot tunnel. Splitting every tick in two shifted where players stop against walls, and bots
@@ -94,6 +97,11 @@ class Player:
     @property
     def max_hp(self) -> int:
         return CLASS[self.pclass]["hp"]
+
+
+def rating(p: Player) -> float:
+    """Ranking score: 2*captures + K/D. Deaths floor at 1 so a deathless player isn't infinite."""
+    return round(2 * p.captures + p.kills / max(p.deaths, 1), 2)
 
 
 @dataclass
@@ -211,7 +219,13 @@ class Game:
         self._barrier_id = 0
         self.started = now
         self.last = now
-        self.winner: int | None = None
+        self.scores = [0, 0]
+        self.round = 1
+        self.resume_at: int | None = None  # set during the intermission after a capture
+        self.round_winner: int | None = None
+        self.over = False
+        self.ended_at: int | None = None
+        self.winner: int | None = None  # match winner; None once over means a tie
         self.capturer: str | None = None
 
     def _spawn(self, p: Player, slot: int | None = None) -> None:
@@ -223,7 +237,7 @@ class Game:
 
     @property
     def ended(self) -> bool:
-        return self.winner is not None
+        return self.over
 
     @staticmethod
     def invisible(p: Player, now: int) -> bool:
@@ -239,7 +253,7 @@ class Game:
     def fire(self, pid: str, ax: float, ay: float, now: int) -> None:
         """Client sends only where it aims; origin, cooldown, weapon and direction are server-side."""
         p = self.players.get(pid)
-        if not p or not p.alive or self.ended:
+        if not p or not p.alive or self.ended or self.resume_at is not None:
             return
         wp = WEAPON[p.weapon]
         if now - p.last_fire < round(wp["cooldownMs"] * CLASS[p.pclass]["fireMult"]):
@@ -262,7 +276,7 @@ class Game:
     def ability(self, pid: str, ax: float, ay: float, now: int) -> None:
         """Q. A request that cannot take effect is ignored and costs nothing."""
         p = self.players.get(pid)
-        if not p or not p.alive or self.ended or now < p.ability_ready_at:
+        if not p or not p.alive or self.ended or self.resume_at is not None or now < p.ability_ready_at:
             return
         kind = CLASS[p.pclass]["ability"]
         ux, uy = ax - p.x, ay - p.y
@@ -309,6 +323,13 @@ class Game:
         self.last = now
         if self.ended:
             return
+        if now - self.started >= MATCH_MS:
+            self._finish(now)
+            return
+        if self.resume_at is not None:
+            if now < self.resume_at:
+                return
+            self._new_round()
         for p in self.players.values():
             if not p.alive and p.respawn_at is not None and now >= p.respawn_at:
                 self._spawn(p)
@@ -421,10 +442,30 @@ class Game:
                 bx, by = BASES[p.team]
                 # Capture only while our own flag is safely home.
                 if own.state == "AT_BASE" and math.hypot(p.x - bx, p.y - by) <= BASE_R:
-                    p.captures += 1
-                    self.winner = p.team
-                    self.capturer = p.id
+                    self._score(p, now)
                     return
+
+    def _score(self, p: Player, now: int) -> None:
+        self.scores[p.team] += 1
+        p.captures += 1
+        self.capturer, self.round_winner = p.id, p.team
+        if self.scores[p.team] >= ROUNDS_TO_WIN:
+            self._finish(now)
+        else:
+            self.resume_at = now + INTERMISSION_MS
+
+    def _finish(self, now: int) -> None:
+        self.over, self.ended_at, self.resume_at = True, now, None
+        self.winner = None if self.scores[0] == self.scores[1] else int(self.scores[1] > self.scores[0])
+
+    def _new_round(self) -> None:
+        for f in self.flags:
+            self._return(f)
+        self.shots, self.barriers = [], []
+        for p in self.players.values():
+            self._spawn(p)
+        self.round += 1
+        self.resume_at = self.round_winner = None
 
     def _return(self, f: Flag) -> None:
         f.state, f.carrier_id, f.dropped_at = "AT_BASE", None, None
@@ -438,8 +479,12 @@ class Game:
             "status": "ENDED" if self.ended else "PLAYING",
             "saved_at": now,
             "started": self.started,
-            "winner": TEAMS[self.winner] if self.ended else None,
+            "winner": TEAMS[self.winner] if self.winner is not None else None,
             "capturer": self.capturer,
+            "scores": self.scores,
+            "round": self.round,
+            "resumeAt": self.resume_at,
+            "roundWinner": TEAMS[self.round_winner] if self.round_winner is not None else None,
             "players": [
                 {"id": p.id, "name": p.name, "team": TEAMS[p.team], "class": p.pclass, "weapon": p.weapon,
                  "x": p.x, "y": p.y, "hp": p.hp, "alive": p.alive, "respawnAt": p.respawn_at, "carryingFlag": p.carrying_flag,
@@ -487,8 +532,13 @@ class Game:
                 raise ValueError(f"barrier {d['id']} disagrees with its owner {d['owner']}")
             g.barriers.append(Barrier(d["id"], d["owner"], owner.team, d["x"], d["y"], d["w"], d["h"], d["hp"], d["expiresAt"]))
         g._barrier_id = max([cp.get("barrierSeq", 0), *(b.id for b in g.barriers)])
-        if cp.get("winner"):
-            g.winner, g.capturer = TEAMS.index(cp["winner"]), cp.get("capturer")
+        g.scores, g.round, g.resume_at = list(cp.get("scores", g.scores)), cp.get("round", 1), cp.get("resumeAt")
+        rw = cp.get("roundWinner")
+        g.round_winner = TEAMS.index(rw) if rw else None
+        g.capturer = cp.get("capturer")
+        if cp.get("status") == "ENDED":
+            g.over, g.ended_at = True, now
+            g.winner = TEAMS.index(cp["winner"]) if cp.get("winner") else None
         return g
 
     def result(self, now: int) -> dict:
@@ -496,7 +546,8 @@ class Game:
         if not self.ended:
             raise ValueError("match has not ended")
         return {
-            "winner": TEAMS[self.winner],
+            "winner": TEAMS[self.winner] if self.winner is not None else "TIE",
+            "scores": {TEAMS[t]: self.scores[t] for t in (0, 1)},
             "capturer": self.capturer,
             "duration_ms": max(0, now - self.started),
             "players": [
@@ -506,7 +557,8 @@ class Game:
                     "team": TEAMS[p.team],
                     "class": p.pclass,
                     "weapon": p.weapon,
-                    "outcome": "WIN" if p.team == self.winner else "LOSS",
+                    "outcome": "TIE" if self.winner is None else "WIN" if p.team == self.winner else "LOSS",
+                    "rating": rating(p),
                     "kills": p.kills,
                     "deaths": p.deaths,
                     "captures": p.captures,
@@ -552,14 +604,21 @@ class Game:
                 "kills": p.kills,
                 "deaths": p.deaths,
                 "captures": p.captures,
+                "rating": rating(p),
             }
 
         return {
             "t": "state",
             "now": now,
-            "elapsed": now - self.started,
+            "elapsed": (now if self.ended_at is None else self.ended_at) - self.started,
+            "matchMs": MATCH_MS,
             "state": "ENDED" if self.ended else "PLAYING",
-            "winner": TEAMS[self.winner] if self.ended else None,
+            "winner": TEAMS[self.winner] if self.winner is not None else None,  # ENDED + None = tie
+            "scores": {TEAMS[t]: self.scores[t] for t in (0, 1)},
+            "round": self.round,
+            "resumesAt": self.resume_at,
+            "roundWinner": TEAMS[self.round_winner] if self.round_winner is not None else None,
+            "capturer": self.capturer,
             "players": [row(p) for p in self.players.values()],
             "flags": [
                 {
@@ -851,7 +910,7 @@ if __name__ == "__main__":  # self-check: python -m app.sim
     g.step(1100 + RESPAWN_MS)
     assert g.players["r0"].alive and g.players["r0"].invisible_until is None and g.players["r0"].ability_ready_at == 16_000
     g = sneak()  # the match end shows everybody
-    g.winner, g.capturer = 0, "r1"
+    g.over, g.winner, g.capturer = True, 0, "r1"
     assert not any(p["hidden"] for p in g.snapshot(1100, viewer_team=1)["players"])
 
     # Checkpoint round-trip: mid-match state (carrier, dropped flag, dead player) survives.
@@ -1005,26 +1064,101 @@ if __name__ == "__main__":  # self-check: python -m app.sim
     assert g.flags[0].state == "AT_BASE" and r2.carrying_flag
     put(r2, *BASES[0])
     g.step(60)
-    assert g.ended and TEAMS[g.winner] == "RED" and g.snapshot(60)["winner"] == "RED"
+    assert not g.ended and g.scores == [1, 0] and g.round_winner == 0 and g.resume_at == 60 + INTERMISSION_MS
     assert r2.captures == 1 and b0.captures == 0 and b0.deaths == 1 and b0.kills == 0  # b0 died to _damage with no killer
-    res = g.result(1060)
-    assert res["winner"] == "RED" and res["capturer"] == "r0" and res["duration_ms"] == 1060
-    assert [(p["id"], p["outcome"], p["captures"], p["deaths"]) for p in res["players"]] == [("r0", "WIN", 1, 0), ("b0", "LOSS", 0, 1)]
-    assert all(p["class"] == "ASSAULTER" and p["weapon"] == "ASSAULT_RIFLE" for p in res["players"])  # history can show what they played
-    h = Game.restore(g.checkpoint(60), 100)  # stats survive a restart, including on an ended match
-    assert h.result(1060) == res
-    old = g.checkpoint(60)
-    for d in old["players"]:
-        for k in ("kills", "deaths", "captures"):
-            del d[k]
-    assert Game.restore(old, 100).players["r0"].captures == 0  # checkpoints written before stats existed still load
-    assert [p["connected"] for p in g.snapshot(60, {"r0"})["players"]] == [True, False]
+    snap = g.snapshot(60, {"r0"})
+    assert snap["scores"] == {"RED": 1, "BLUE": 0} and snap["roundWinner"] == "RED" and snap["resumesAt"] == g.resume_at
+    assert [p["connected"] for p in snap["players"]] == [True, False]
 
-    # After the end nothing moves or fires.
+    # Intermission freezes the sim (no moves, shots or Q); then the arena resets for the next round.
     g.set_keys("r0", {"up": True})
     y = r2.y
     g.step(1000)
-    g.fire("b0", 0, 0, 5000)
-    g.ability("r0", 0, 0, 5000)
-    assert r2.y == y and not g.shots
+    g.fire("b0", 0, 0, 1000)
+    g.ability("r0", 0, 0, 1000)
+    assert r2.y == y and not g.shots and g.round == 1
+    g.set_keys("r0", {})
+    g.step(60 + INTERMISSION_MS)
+    assert g.round == 2 and g.resume_at is None and g.round_winner is None and g.scores == [1, 0]
+    assert all(f.state == "AT_BASE" for f in g.flags) and not r2.carrying_flag and (r2.x, r2.y) == SPAWNS[0][0]
+
+    # Stats: a kill counts for the shooter, a death for the victim; rating = 2*captures + K/D.
+    g = new()
+    r0, b0 = g.players["r0"], g.players["b0"]
+    assert rating(r0) == 0
+    g._damage(b0, 10, "r0", b0.hp)
+    assert (r0.kills, b0.deaths, b0.kills) == (1, 1, 0) and rating(r0) == 1.0 and rating(b0) == 0
+    r0.captures = 2
+    assert rating(r0) == 5.0
+    p0 = g.snapshot(10)["players"][0]
+    assert (p0["captures"], p0["kills"], p0["deaths"], p0["rating"]) == (2, 1, 0, 5.0)
+
+    def cap(g, team, now):
+        """Team `team` captures: its player steps on the enemy flag, then onto its own base."""
+        p = next(q for q in g.players.values() if q.team == team)
+        p.x, p.y = BASES[1 - team]
+        g.step(now + 1)
+        p.x, p.y = BASES[team]
+        g.step(now + 2)
+
+    # First to ROUNDS_TO_WIN ends the match immediately, with a winner; nothing moves or fires after.
+    g = new()
+    t = 0
+    for _ in range(ROUNDS_TO_WIN - 1):
+        cap(g, 0, t)
+        assert not g.ended
+        t += 10_000
+        g.step(t)  # intermission over
+    cap(g, 0, t)
+    assert g.ended and g.winner == 0 and g.scores == [ROUNDS_TO_WIN, 0] and g.snapshot(t)["winner"] == "RED"
+    assert g.players["r0"].captures == ROUNDS_TO_WIN
+    g.set_keys("r0", {"up": True})
+    y = g.players["r0"].y
+    g.step(t + 5000)
+    g.fire("b0", 0, 0, t + 5000)
+    g.ability("r0", 0, 0, t + 5000)
+    assert g.players["r0"].y == y and not g.shots  # nothing moves after the end
+
+    # result(): what history and career stats read. Class and weapon are kept; a tie is a TIE for everyone.
+    res = g.result(t + 1000)
+    assert res["winner"] == "RED" and res["scores"] == {"RED": ROUNDS_TO_WIN, "BLUE": 0} and res["capturer"] == "r0"
+    assert [(p["id"], p["outcome"], p["captures"], p["deaths"]) for p in res["players"]] == [("r0", "WIN", ROUNDS_TO_WIN, 0), ("b0", "LOSS", 0, 0)]
+    assert all(p["class"] == "ASSAULTER" and p["weapon"] == "ASSAULT_RIFLE" for p in res["players"])
+    assert Game.restore(g.checkpoint(t), t + 100).result(t + 1000) == res  # stats survive a restart, even on an ended match
+    old = g.checkpoint(t)
+    for d in old["players"]:
+        for k in ("kills", "deaths", "captures"):
+            del d[k]
+    assert Game.restore(old, t + 100).players["r0"].captures == 0  # checkpoints written before stats existed still load
+
+    # Timeout: higher score wins, equal is a tie (ENDED with winner None), unfinished round is discarded.
+    g = new()
+    cap(g, 1, 0)
+    g.step(MATCH_MS - 1)
+    assert not g.ended
+    g.step(MATCH_MS)
+    assert g.ended and TEAMS[g.winner] == "BLUE" and g.snapshot(MATCH_MS)["elapsed"] == MATCH_MS
+    g = new()
+    cap(g, 0, 0)
+    g.step(10_000)
+    cap(g, 1, 20_000)
+    g.step(MATCH_MS)
+    s = g.snapshot(MATCH_MS)
+    assert g.ended and g.winner is None and s["state"] == "ENDED" and s["winner"] is None and s["scores"] == {"RED": 1, "BLUE": 1}
+    res = g.result(MATCH_MS)
+    assert res["winner"] == "TIE" and {p["outcome"] for p in res["players"]} == {"TIE"}
+    g = new()
+    g.step(MATCH_MS)
+    assert g.ended and g.winner is None  # 0-0 is a tie too
+
+    # Checkpoint keeps score, round, stats, intermission; an ENDED checkpoint restores as ended.
+    g = new()
+    cap(g, 0, 0)
+    g.players["b0"].deaths = 3
+    cp = g.checkpoint(100)
+    h = Game.restore(cp, 200)
+    assert h.scores == [1, 0] and h.resume_at == g.resume_at and h.round_winner == 0 and h.players["r0"].captures == 1 and h.players["b0"].deaths == 3
+    g.step(MATCH_MS)
+    h = Game.restore(g.checkpoint(MATCH_MS), MATCH_MS)
+    assert h.ended and h.winner == 0
     print("sim ok")

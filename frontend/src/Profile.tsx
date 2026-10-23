@@ -21,6 +21,7 @@ function Tile({ label, value, sub, tone }: { label: string; value: string | numb
 
 function Row({ m, meId, open, toggle }: { m: HistoryItem; meId: string; open: boolean; toggle: () => void }) {
   const win = m.outcome === 'WIN'
+  const tie = m.outcome === 'TIE'
   return (
     <li className="border-t border-white/[0.06] first:border-t-0">
       <button
@@ -28,7 +29,7 @@ function Row({ m, meId, open, toggle }: { m: HistoryItem; meId: string; open: bo
         aria-expanded={open}
         className="grid w-full grid-cols-[5.5rem_1fr_auto] items-center gap-3 px-3 py-3 text-left hover:bg-white/[0.03] sm:grid-cols-[6rem_1fr_9rem_auto] sm:px-4"
       >
-        <span className={`font-display text-sm font-bold tracking-[0.15em] ${win ? 'text-online' : 'text-foe'}`}>{win ? 'VICTORY' : 'DEFEAT'}</span>
+        <span className={`font-display text-sm font-bold tracking-[0.15em] ${win ? 'text-online' : tie ? 'text-ink-400' : 'text-foe'}`}>{win ? 'VICTORY' : tie ? 'TIE' : 'DEFEAT'}</span>
         <span className="min-w-0">
           <span className="block truncate text-sm font-semibold">
             Squad · {m.players.length / 2}v{m.players.length / 2}

@@ -16,8 +16,9 @@ Assassin's coordinates are never sent to the enemy team.
 
 Persistence: the simulation lives in RAM. Every CHECKPOINT_MS a small snapshot goes to
 MongoDB `game_checkpoints` (one doc per match). On startup, recent PLAYING checkpoints of
-IN_PROGRESS matches are restored and players reconnect into them. On capture the server
-writes `result` (winner plus per-player kills / deaths / captures) onto the match and logs
+IN_PROGRESS matches are restored and players reconnect into them. A capture scores a
+round; first to 3, or the higher score at 10:00 (equal = TIE), ends the match. The server
+writes `result` (winner, scores, per-player kills / deaths / captures) onto the match and logs
 MATCH_ENDED and one PLAYER_RESULT per player; the match itself is still closed by
 matchmaking's existing /leave flow ("Return to hub").
 """
@@ -118,7 +119,8 @@ async def open_room(match_id: str, user_id: str) -> Room:
         if not m:
             raise ApiError(404, "MATCH_NOT_FOUND", "Match not found.")
         if m.get("result"):
-            raise ApiError(409, "MATCH_ENDED", f"{m['result']['winner']} TEAM WINS")
+            w = m["result"]["winner"]
+            raise ApiError(409, "MATCH_ENDED", "TIE" if w == "TIE" else f"{w} TEAM WINS")
         if m["status"] != "IN_PROGRESS":
             raise ApiError(409, "MATCH_NOT_STARTED", "Match is not in progress.")
         cp = await checkpoints.find_one({"match_id": match_id})
@@ -204,7 +206,7 @@ async def _record_result(room: Room) -> None:
     profile stats are computed from, the events are the append-only audit trail of the same fact.
     """
     g = room.game
-    result = {**g.result(g.last), "at": datetime.now(timezone.utc)}  # g.last = the capture tick, not when the write happens
+    result = {**g.result(g.ended_at), "at": datetime.now(timezone.utc)}  # g.ended_at = the final capture / timeout tick, not when the write happens
     for attempt in range(1, RESULT_ATTEMPTS + 1):
         try:
             done = await matches.update_one({"match_id": room.match_id, "result": {"$exists": False}}, {"$set": {"result": result}})
