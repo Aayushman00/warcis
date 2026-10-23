@@ -2,7 +2,7 @@
    Server is authoritative; this file never decides anything, it only shows server
    snapshots ~INTERP_MS in the past, smoothly. Colors come from tokens.ts. */
 
-import type { ClassId, WeaponId } from '../api'
+import type { ClassId, DecidedBy, WeaponId } from '../api'
 import { drawAvatar } from './classes'
 import { alpha, color, font, team as TC, type Team } from './tokens'
 
@@ -39,9 +39,13 @@ export type Snapshot = {
   t: 'state'
   now: number
   elapsed: number
-  matchMs: number
+  matchMs: number // regulation; level scores there start sudden death
+  hardStopMs: number // sudden death ends here and the tiebreak decides
+  suddenDeath: boolean // no respawns, next capture wins
   state: 'PLAYING' | 'ENDED'
-  winner: Team | null // ENDED with no winner = tie
+  winner: Team | null // ENDED with no winner = draw
+  decidedBy: DecidedBy | null
+  progress: Record<Team, number> // furthest flag carry this round, % of the way home (the 12:00 tiebreak)
   scores: Record<Team, number>
   round: number
   resumesAt: number | null // set while the intermission after a capture runs

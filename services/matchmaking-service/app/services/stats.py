@@ -11,13 +11,13 @@ from app.db.mongo import matches
 
 MAX_STATS_IDS = 50
 MAX_HISTORY = 50
-ZERO = {"matches": 0, "wins": 0, "losses": 0, "ties": 0, "kills": 0, "deaths": 0, "captures": 0}
+ZERO = {"matches": 0, "wins": 0, "losses": 0, "kills": 0, "deaths": 0, "captures": 0}
 
 
 def _shape(row: dict | None) -> dict:
     """One player's aggregate row -> the public stats object (adds the derived ratios)."""
     r = {k: int((row or {}).get(k, 0)) for k in ZERO}
-    r["losses"] = r["matches"] - r["wins"] - r["ties"]  # a tie (equal score at the clock) is neither
+    r["losses"] = r["matches"] - r["wins"]
     r["kd"] = round(r["kills"] / max(r["deaths"], 1), 2)
     r["win_rate"] = round(r["wins"] / r["matches"], 3) if r["matches"] else None
     return r
@@ -26,7 +26,8 @@ def _shape(row: dict | None) -> dict:
 async def player_stats(user_ids: list[str]) -> dict[str, dict]:
     """Career totals for each id (zeros for players who never finished a match).
 
-    Only matches with a recorded `result` count: cancelled or abandoned matches have none.
+    Only matches with a recorded `result` count: cancelled or abandoned matches have none. A draw
+    (winner TIE) is not a win, a loss or a counted match; its kills, deaths and captures still count.
     """
     ids = list(dict.fromkeys(user_ids))[:MAX_STATS_IDS]
     cursor = await matches.aggregate(
@@ -37,9 +38,8 @@ async def player_stats(user_ids: list[str]) -> dict[str, dict]:
             {
                 "$group": {
                     "_id": "$result.players.id",
-                    "matches": {"$sum": 1},
+                    "matches": {"$sum": {"$cond": [{"$eq": ["$result.winner", "TIE"]}, 0, 1]}},
                     "wins": {"$sum": {"$cond": [{"$eq": ["$result.players.team", "$result.winner"]}, 1, 0]}},
-                    "ties": {"$sum": {"$cond": [{"$eq": ["$result.winner", "TIE"]}, 1, 0]}},
                     "kills": {"$sum": "$result.players.kills"},
                     "deaths": {"$sum": "$result.players.deaths"},
                     "captures": {"$sum": "$result.players.captures"},
@@ -58,6 +58,7 @@ def result_view(m: dict) -> dict | None:
     return {
         "winner": r["winner"],
         "capturer": r.get("capturer"),
+        "decided_by": r.get("decided_by"),  # absent on matches played before sudden death existed
         "duration_ms": r.get("duration_ms", 0),
         "ended_at": r["at"].isoformat() if r.get("at") else None,
         "players": r["players"],
@@ -108,11 +109,9 @@ async def history(user_id: str, limit: int, before: str | None) -> dict:
 if __name__ == "__main__":  # self-check of the pure shaping code (the aggregation itself needs MongoDB)
     from datetime import timezone
 
-    assert _shape(None) == {"matches": 0, "wins": 0, "losses": 0, "ties": 0, "kills": 0, "deaths": 0, "captures": 0, "kd": 0.0, "win_rate": None}
+    assert _shape(None) == {"matches": 0, "wins": 0, "losses": 0, "kills": 0, "deaths": 0, "captures": 0, "kd": 0.0, "win_rate": None}
     s = _shape({"matches": 4, "wins": 3, "kills": 9, "deaths": 4, "captures": 2})
-    assert s["losses"] == 1 and s["ties"] == 0 and s["kd"] == 2.25 and s["win_rate"] == 0.75
-    s = _shape({"matches": 5, "wins": 2, "ties": 2})
-    assert s["losses"] == 1 and s["ties"] == 2 and s["win_rate"] == 0.4  # ties are not losses; win rate stays wins / matches
+    assert s["losses"] == 1 and s["kd"] == 2.25 and s["win_rate"] == 0.75
     assert _shape({"matches": 1, "wins": 0, "kills": 3, "deaths": 0})["kd"] == 3.0  # no deaths: kills, not a division by zero
 
     t = datetime(2026, 1, 1, tzinfo=timezone.utc)

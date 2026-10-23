@@ -29,7 +29,7 @@ function Row({ m, meId, open, toggle }: { m: HistoryItem; meId: string; open: bo
         aria-expanded={open}
         className="grid w-full grid-cols-[5.5rem_1fr_auto] items-center gap-3 px-3 py-3 text-left hover:bg-white/[0.03] sm:grid-cols-[6rem_1fr_9rem_auto] sm:px-4"
       >
-        <span className={`font-display text-sm font-bold tracking-[0.15em] ${win ? 'text-online' : tie ? 'text-ink-400' : 'text-foe'}`}>{win ? 'VICTORY' : tie ? 'TIE' : 'DEFEAT'}</span>
+        <span className={`font-display text-sm font-bold tracking-[0.15em] ${win ? 'text-online' : tie ? 'text-ink-400' : 'text-foe'}`}>{win ? 'VICTORY' : tie ? 'DRAW' : 'DEFEAT'}</span>
         <span className="min-w-0">
           <span className="block truncate text-sm font-semibold">
             Squad · {m.players.length / 2}v{m.players.length / 2}
@@ -100,7 +100,7 @@ export function Profile({ me, stats }: { me: Player; stats?: PlayerStats }) {
           </div>
         </div>
         <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-          <Tile label="Matches" value={s?.matches ?? '–'} sub={s?.ties ? `${s.ties} tied` : undefined} />
+          <Tile label="Matches" value={s?.matches ?? '–'} />
           <Tile label="Wins" value={s?.wins ?? '–'} tone="text-online" />
           <Tile label="Losses" value={s?.losses ?? '–'} tone="text-foe" />
           <Tile label="Win rate" value={s ? pct(s.win_rate) : '–'} />

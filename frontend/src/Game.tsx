@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
-import { token, type ClassId, type MatchDTO, type WeaponId } from './api'
+import { token, type ClassId, type DecidedBy, type MatchDTO, type WeaponId } from './api'
 import type { Player } from './data'
 import { CLASS_INFO, WEAPON_INFO } from './game/classes'
 import './game/hud.css'
@@ -23,7 +23,10 @@ type Hud = {
   roster: Record<Team, { id: string; alive: boolean; connected: boolean }[]>
   flags: Record<Team, FlagHud>
   ended: boolean
-  winner: Team | null // ended with no winner = tie
+  winner: Team | null // ended with no winner = draw
+  decidedBy: DecidedBy | null
+  progress: Record<Team, number>
+  suddenDeath: boolean // no respawns, next capture wins
   capturer: Who | null // whoever scored the last round
   rows: ScoreRow[] // kills / deaths / captures of everyone, live (final screen)
   scores: Record<Team, number>
@@ -52,6 +55,26 @@ const PING_EVERY_MS = 2000
 const FIRE_SEND_MS = 20
 const INTRO_IF_YOUNGER_MS = 15_000
 const tc = (t: Team) => (t === 'RED' ? 'g-red' : 'g-blue')
+const KICKER: Record<DecidedBy, string> = {
+  ROUNDS: 'Match over',
+  SCORE: 'Time is up',
+  SUDDEN_DEATH: 'Sudden death capture',
+  OBJECTIVE: 'Decided on objective progress',
+  KILLS: 'Objective level, decided on kills',
+  DRAW: 'Objective and kills level',
+}
+const kicker = (by: DecidedBy | null, hasWinner: boolean) => (by ? KICKER[by] : hasWinner ? 'Match over' : 'Time is up, scores are level') // null: stored before sudden death existed
+/** The numbers behind a 12:00 tiebreak, so a win on progress or kills is not a mystery. */
+function tiebreakLine(f: { decidedBy: DecidedBy | null; progress: Record<Team, number>; rows: { team: Team; kills: number }[] }) {
+  if (f.decidedBy !== 'OBJECTIVE' && f.decidedBy !== 'KILLS' && f.decidedBy !== 'DRAW') return null
+  const kills = (t: Team) => f.rows.filter((r) => r.team === t).reduce((n, r) => n + r.kills, 0)
+  return (
+    <span className="g-result-by">
+      Flag carried <span className="g-blue">{f.progress.BLUE}%</span> vs <span className="g-red">{f.progress.RED}%</span> of the way home · kills{' '}
+      <span className="g-blue">{kills('BLUE')}</span> vs <span className="g-red">{kills('RED')}</span>
+    </span>
+  )
+}
 const cap = (t: Team) => t[0] + t.slice(1).toLowerCase()
 const clock = (ms: number) => {
   const s = Math.max(0, Math.floor(ms / 1000))
@@ -81,6 +104,7 @@ function viewSnap(s: Snapshot, w: number, v: View): Snapshot {
     winner: s.winner && t(s.winner),
     roundWinner: s.roundWinner && t(s.roundWinner),
     scores: v.swap ? { RED: s.scores.BLUE, BLUE: s.scores.RED } : s.scores,
+    progress: v.swap ? { RED: s.progress.BLUE, BLUE: s.progress.RED } : s.progress,
     players: s.players.map((p) => ({ ...p, team: t(p.team), x: p.x === null ? null : x(p.x) })),
     flags: s.flags.map((f) => ({ ...f, team: t(f.team), x: x(f.x) })),
     shots: s.shots.map((o) => ({ ...o, team: t(o.team), x: x(o.x) })),
@@ -107,6 +131,9 @@ function hudOf(s: Snapshot, meId: string): Hud {
     flags: { RED: flag('RED'), BLUE: flag('BLUE') },
     ended: s.state === 'ENDED',
     winner: s.winner,
+    decidedBy: s.decidedBy,
+    progress: s.progress,
+    suddenDeath: s.suddenDeath,
     capturer: who(s.capturer),
     rows: s.players.map((p) => ({ id: p.id, name: p.name, team: p.team, kills: p.kills, deaths: p.deaths, captures: p.captures, cls: p.class })),
     scores: s.scores,
@@ -337,6 +364,7 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
         r.at(t, () => sfx.win(mine?.team === w))
       }
       if (b.round > a.round) announce(`ROUND ${b.round}`, 'Steal the enemy flag and bring it home', mine?.team ?? 'BLUE', t)
+      if (b.suddenDeath && !a.suddenDeath) announce('SUDDEN DEATH', 'No respawns · next capture wins', mine?.team ?? 'BLUE', t)
     }
 
     const onSnapshot = (s: Snapshot) => {
@@ -485,7 +513,9 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
       const s = tl.current.latest()
       if (!s) return
       const t = tl.current.renderTime()
-      if (clockEl.current) clockEl.current.textContent = clock(s.matchMs - (s.state === 'ENDED' ? s.elapsed : s.elapsed - (s.now - t)))
+      // Regulation counts down to 10:00; sudden death then counts down the 2 minutes to the tiebreak.
+      const elapsed = s.state === 'ENDED' ? s.elapsed : s.elapsed - (s.now - t)
+      if (clockEl.current) clockEl.current.textContent = clock((s.suddenDeath ? s.hardStopMs : s.matchMs) - elapsed)
       if (s.resumesAt && resumeEl.current) resumeEl.current.textContent = String(Math.max(1, Math.ceil((s.resumesAt - t) / 1000)))
       const mine = s.players.find((p) => p.id === me.id)
       if (mine && qEl.current) {
@@ -518,7 +548,7 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
   // The final result: the live snapshot while the room is open, else the stored one (a reconnect
   // after the room unloaded gets an error from the server, but the match document has the result).
   const final = (() => {
-    if (hud?.ended) return { winner: hud.winner, capturer: hud.capturer, rows: hud.rows, scores: hud.scores }
+    if (hud?.ended) return { winner: hud.winner, decidedBy: hud.decidedBy, progress: hud.progress, capturer: hud.capturer, rows: hud.rows, scores: hud.scores }
     const r = match.result
     if (!r) return null
     const v = viewOf(match.my_team)
@@ -526,8 +556,11 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
     const rows = r.players.map((p) => ({ id: p.id, name: p.name, team: vt(p.team), kills: p.kills, deaths: p.deaths, captures: p.captures, cls: p.class }))
     const cap = rows.find((p) => p.id === r.capturer)
     const sc = r.scores ?? { RED: r.winner === 'RED' ? 1 : 0, BLUE: r.winner === 'BLUE' ? 1 : 0 } // results stored before rounds existed
+    const pr = r.progress ?? { RED: 0, BLUE: 0 }
     return {
       winner: r.winner === 'TIE' ? null : vt(r.winner),
+      decidedBy: r.decided_by ?? null,
+      progress: v.swap ? { RED: pr.BLUE, BLUE: pr.RED } : pr,
       capturer: cap ? { name: cap.name, team: cap.team } : null,
       rows,
       scores: v.swap ? { RED: sc.BLUE, BLUE: sc.RED } : sc,
@@ -612,7 +645,7 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
         {wing('BLUE')}
         <div className="g-clock">
           <span ref={clockEl}>10:00</span>
-          {hud && !hud.ended && <small className="g-round-tag">ROUND {hud.round}</small>}
+          {hud && !hud.ended && <small className={`g-round-tag ${hud.suddenDeath ? 'is-sudden' : ''}`}>{hud.suddenDeath ? 'SUDDEN DEATH' : `ROUND ${hud.round}`}</small>}
         </div>
         {wing('RED')}
       </header>
@@ -684,14 +717,20 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
                       by <b>{mine.killer.name}</b>
                     </span>
                   )}
-                  <div className="g-ring">
-                    <svg viewBox="0 0 104 104">
-                      <circle cx="52" cy="52" r="46" fill="none" stroke={color.rule} strokeWidth="4" />
-                      <circle ref={ringEl} cx="52" cy="52" r="46" fill="none" stroke={color.ink} strokeWidth="4" strokeLinecap="round" strokeDasharray={2 * Math.PI * 46} strokeDashoffset={2 * Math.PI * 46} />
-                    </svg>
-                    <span ref={respawnEl}>3.0</span>
-                  </div>
-                  <span className="g-death-note">Respawning</span>
+                  {hud?.suddenDeath ? (
+                    <span className="g-death-note">No respawns in sudden death. You are out until the match ends.</span>
+                  ) : (
+                    <>
+                      <div className="g-ring">
+                        <svg viewBox="0 0 104 104">
+                          <circle cx="52" cy="52" r="46" fill="none" stroke={color.rule} strokeWidth="4" />
+                          <circle ref={ringEl} cx="52" cy="52" r="46" fill="none" stroke={color.ink} strokeWidth="4" strokeLinecap="round" strokeDasharray={2 * Math.PI * 46} strokeDashoffset={2 * Math.PI * 46} />
+                        </svg>
+                        <span ref={respawnEl}>3.0</span>
+                      </div>
+                      <span className="g-death-note">Respawning</span>
+                    </>
+                  )}
                 </div>
               </div>
             )}
@@ -701,8 +740,8 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
                 <div className={`g-result-band ${final ? 'has-board' : ''}`} role="dialog" aria-label="Match result">
                   {final ? (
                     <>
-                      <span className="g-result-kicker">{final.winner ? 'Match over' : 'Time is up, scores are level'}</span>
-                      <span className={`g-result-title ${won ? '' : 'is-defeat'}`}>{!final.winner ? 'TIE' : won ? 'VICTORY' : 'DEFEAT'}</span>
+                      <span className="g-result-kicker">{kicker(final.decidedBy, !!final.winner)}</span>
+                      <span className={`g-result-title ${won ? '' : 'is-defeat'}`}>{!final.winner ? 'DRAW' : won ? 'VICTORY' : 'DEFEAT'}</span>
                       <span className="g-result-score" aria-label={`Blue ${score.BLUE}, Red ${score.RED}`}>
                         <em className="g-blue">BLUE</em>
                         <span className="g-blue">{score.BLUE}</span>
@@ -710,7 +749,7 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
                         <span className="g-red">{score.RED}</span>
                         <em className="g-red">RED</em>
                       </span>
-                      {final.winner && final.capturer && <span className="g-result-by">Last capture by {final.capturer.name}</span>}
+                      {tiebreakLine(final) ?? (final.winner && final.capturer && <span className="g-result-by">Last capture by {final.capturer.name}</span>)}
                       <div className="g-result-board">
                         <Scoreboard rows={final.rows} meId={me.id} myTeam={myTeam ?? 'BLUE'} />
                       </div>

@@ -252,7 +252,7 @@ if __name__ == "__main__":  # self-check against the real map/rules: python scri
         path = b.find_path((sx, sy), (1200 - sx, 350))
         assert all(b.clear(p, q, pad=14) for p, q in zip([(sx, sy)] + path, path)), "path cuts through a wall"
 
-    def play(n: int, seed: int, max_s: float = 620):
+    def play(n: int, seed: int, max_s: float = 740):  # past the 12:00 hard stop
         """Run bots-only n v n against the real sim at 30 Hz; bots think at 10 Hz."""
         rng = random.Random(seed)
         combos = [{"class": c, "weapon": w} for c in CLASS for w in WEAPON]  # every class and weapon appears, mixed
@@ -291,7 +291,7 @@ if __name__ == "__main__":  # self-check against the real map/rules: python scri
         on_field = {p.pclass for p in g.players.values()}
         assert all(seen["q"][c] for c in on_field), f"{n}v{n}: a class on the field never used Q: {seen['q']}"
         used = {c: used[c] + seen["q"][c] for c in CLASS}
-        result = f"{TEAMS[g.winner]} won" if g.winner is not None else "tie"
+        result = f"{TEAMS[g.winner]} won ({g.decided_by})" if g.winner is not None else "draw"
         print(f"{n}v{n} bots: {result} after {t / 1000:.0f}s game time, {seen['fire']} shots, {seen['deaths']} deaths, flag held {seen['stolen']} samples, Q {seen['q']}")
     assert all(used.values()), f"a class never used Q: {used}"
     print("bot_ai ok")

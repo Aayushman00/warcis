@@ -483,7 +483,7 @@ def run_abilities() -> None:
     print("ABILITIES E2E PASSED")
 
 
-def run_bots(max_s: float = 660) -> None:
+def run_bots(max_s: float = 780) -> None:  # 12:00 hard stop + room for the restart
     """One passive human in a 4v4 with the 7 demo bots: bots must move, fight, take flags,
     survive a game-service restart (reconnect on their own) and finish the match."""
     human = Client().register(f"ctfh{uuid.uuid4().hex[:5]}", "password123")
@@ -557,7 +557,8 @@ def run_bots(max_s: float = 660) -> None:
                             print(f"  after restart: all 7 bots reconnected at {time.time() - t0:.0f}s")
                         if st["state"] == "ENDED":
                             mine = next(p for p in st["players"] if p["id"] == human.me["id"])
-                            print(f"  {st['winner']} TEAM WINS after {st['elapsed'] // 1000}s: human (on {mine['team']}) {'won' if st['winner'] == mine['team'] else 'lost'}")
+                            verdict = f"{st['winner']} TEAM WINS" if st["winner"] else "DRAW"
+                            print(f"  {verdict} ({st['decidedBy']}) after {st['elapsed'] // 1000}s: human (on {mine['team']}) {'won' if st['winner'] == mine['team'] else 'did not win'}")
                             return {**stats, "reconnected": reconnected}
             except (OSError, websockets.ConnectionClosed, websockets.InvalidHandshake):
                 await asyncio.sleep(1)

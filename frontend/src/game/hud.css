@@ -368,3 +368,5 @@
 .g-board.is-compact .g-board-team { font-size: 13px; }
 .g-board.is-compact .g-board-team td, .g-board.is-compact .g-board-team th { padding: 2px 8px; }
 .g-result { overflow: auto; }
+.g-round-tag.is-sudden { color: var(--g-hpLow); }
+.g-result-by .g-red, .g-result-by .g-blue { color: var(--tc-light); font-weight: 600; }
