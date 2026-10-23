@@ -27,9 +27,10 @@ export type GPlayer = {
   connected: boolean
   bot: boolean
   killedBy: string | null
+  captures: number
   kills: number
   deaths: number
-  captures: number
+  rating: number // server-computed ranking score
 }
 export type GFlag = { team: Team; x: number; y: number; state: 'AT_BASE' | 'CARRIED' | 'DROPPED'; carrierId: string | null; returnAt: number | null }
 export type GShot = { id: number; owner: string; team: Team; x: number; y: number; w: WeaponId }
@@ -38,8 +39,14 @@ export type Snapshot = {
   t: 'state'
   now: number
   elapsed: number
+  matchMs: number
   state: 'PLAYING' | 'ENDED'
-  winner: Team | null
+  winner: Team | null // ENDED with no winner = tie
+  scores: Record<Team, number>
+  round: number
+  resumesAt: number | null // set while the intermission after a capture runs
+  roundWinner: Team | null
+  capturer: string | null
   players: GPlayer[]
   flags: GFlag[]
   shots: GShot[]

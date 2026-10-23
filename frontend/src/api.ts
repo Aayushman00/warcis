@@ -101,7 +101,7 @@ export interface PlayerResult {
   id: string
   name: string
   team: TeamName
-  outcome: 'WIN' | 'LOSS'
+  outcome: 'WIN' | 'LOSS' | 'TIE'
   kills: number
   deaths: number
   captures: number
@@ -109,7 +109,8 @@ export interface PlayerResult {
   weapon?: WeaponId
 }
 export interface MatchResult {
-  winner: TeamName
+  winner: TeamName | 'TIE'
+  scores?: Record<TeamName, number> // absent on matches played before rounds existed
   capturer: string | null
   duration_ms: number
   ended_at: string | null
@@ -119,7 +120,7 @@ export interface HistoryItem extends MatchResult {
   match_id: string
   mode: string
   played_at: string
-  outcome: 'WIN' | 'LOSS'
+  outcome: 'WIN' | 'LOSS' | 'TIE'
   my_team: TeamName
   me: { kills: number; deaths: number; captures: number }
 }
