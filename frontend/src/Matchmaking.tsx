@@ -7,24 +7,11 @@ import { sfx } from './game/sfx'
 import { Armory, ClassAvatar, HiddenAvatar } from './Loadout'
 import { Avatar, Icon } from './ui'
 
-type Group = { label: string; players: QPlayer[]; mine?: boolean }
-
-/**
- * Turn a server team ({players, parties}) into labelled party groups.
- * Your own party first ("Party A · You"), other multi-player parties get B, C, … and solos "Solo".
- */
-function groupsOf(team: TeamDTO, meId: string, letters: { next: number }): Group[] {
-  const byId = new Map(team.players.map((p) => [p.id, p]))
-  const groups = team.parties.map((pt) => {
-    const players = pt.players.map((id) => byId.get(id)!).filter(Boolean)
-    const mine = pt.players.includes(meId)
-    return { players, mine, label: '' }
-  })
-  groups.sort((a, b) => Number(b.mine) - Number(a.mine))
-  for (const g of groups) {
-    g.label = g.mine ? (g.players.length > 1 ? 'Party A · You' : 'You') : g.players.length > 1 ? `Party ${String.fromCharCode(66 + letters.next++)}` : 'Solo'
-  }
-  return groups
+/** A team's players as flat tiles: you first, then your party-mates, then everyone else in the server's order. */
+function playersOf(team: TeamDTO, meId: string): QPlayer[] {
+  const mates = new Set(team.parties.find((pt) => pt.players.includes(meId))?.players)
+  const rank = (p: QPlayer) => (p.id === meId ? 0 : mates.has(p.id) ? 1 : 2)
+  return [...team.players].sort((a, b) => rank(a) - rank(b)) // stable: ties keep the server's order
 }
 
 const clock = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
@@ -60,7 +47,7 @@ function Searching({ q, me, onCancel }: { q: QueueDTO; me: Player; onCancel: () 
     return () => clearInterval(t)
   }, [])
   const elapsed = Math.max(0, Math.floor((now - Date.parse(q.joined_at)) / 1000))
-  const ours = groupsOf(q.team, me.id, { next: 0 })
+  const ours = playersOf(q.team, me.id)
   const filled = q.team.players.length
   const modeName = modeLabel(q.mode)
   const openSlots = q.fill ? MAX_PARTY - filled : 0
@@ -101,8 +88,8 @@ function Searching({ q, me, onCancel }: { q: QueueDTO; me: Player; onCancel: () 
           </span>
         </div>
         <div className="flex flex-wrap justify-center gap-3">
-          {ours.map((g) => (
-            <GroupBox key={g.players[0].id} g={g} side="ally" />
+          {ours.map((p) => (
+            <PlayerTile key={p.id} p={p} mine={p.id === me.id} side="ally" />
           ))}
           {Array.from({ length: openSlots }, (_, i) => (
             <div key={i} className="flex w-28 flex-col items-center gap-2 rounded-xl border border-dashed border-white/12 p-3">
@@ -127,74 +114,66 @@ function Searching({ q, me, onCancel }: { q: QueueDTO; me: Player; onCancel: () 
   )
 }
 
-function GroupBox({
-  g,
+function PlayerTile({
+  p,
+  mine,
   side,
   readyIds,
   big,
   loadouts,
 }: {
-  g: Group
+  p: QPlayer
+  mine?: boolean
   side: 'ally' | 'foe'
   readyIds?: Set<string>
   big?: boolean
   loadouts?: Record<string, Loadout>
 }) {
-  const tone = side === 'ally' ? (g.mine ? 'border-gold/50 bg-gold/[0.05]' : 'border-ally/30 bg-ally/[0.04]') : 'border-foe/30 bg-foe/[0.04]'
-  const chip = side === 'ally' ? (g.mine ? 'text-gold' : 'text-ally') : 'text-foe'
+  const tone = side === 'ally' ? (mine ? 'border-gold/50 bg-gold/[0.05]' : 'border-ally/30 bg-ally/[0.04]') : 'border-foe/30 bg-foe/[0.04]'
   return (
-    <div className={`animate-rise rounded-xl border p-3 ${tone}`}>
-      <p className={`mb-2 text-left font-display text-[10px] font-bold tracking-[0.2em] uppercase ${chip}`}>
-        {g.label} {g.players.length > 1 && <span className="text-ink-400">· {g.players.length}</span>}
-      </p>
-      <div className="flex gap-2">
-        {g.players.map((p) => (
-          <div key={p.id} className={`flex flex-col items-center gap-1.5 ${big ? 'w-24' : 'w-22'}`}>
-            <div className="relative">
-              <Avatar name={p.name} size={big ? 72 : 56} />
-              {readyIds && (
-                <span
-                  className={`absolute -right-1 -bottom-1 grid size-5 place-items-center rounded-full ring-2 ring-ink-850 transition ${
-                    readyIds.has(p.id) ? 'bg-online text-ink-950' : 'bg-ink-600'
-                  }`}
-                >
-                  {readyIds.has(p.id) ? <Icon name="check" className="size-3" /> : <span className="size-1.5 animate-pulse rounded-full bg-ink-300" />}
-                </span>
-              )}
-            </div>
-            <span className="w-full truncate text-center text-xs font-semibold">{p.name}</span>
-            {loadouts && (
-              <span className="flex w-full flex-col items-center gap-0.5 text-center text-[10px] text-ink-300">
-                {loadouts[p.id] ? (
-                  <>
-                    <ClassAvatar key={loadouts[p.id].class + loadouts[p.id].weapon} cls={loadouts[p.id].class} weapon={loadouts[p.id].weapon} side={side} size={44} />
-                    <span className={`w-full truncate font-display text-[11px] font-bold tracking-[0.14em] uppercase ${side === 'ally' ? 'text-ally' : 'text-foe'}`}>
-                      {BUILD[loadouts[p.id].class][loadouts[p.id].weapon]}
-                    </span>
-                    <span className="w-full truncate text-ink-400" title={`${CLASS_INFO[loadouts[p.id].class].name} · ${WEAPON_INFO[loadouts[p.id].weapon].name}`}>
-                      {CLASS_INFO[loadouts[p.id].class].short} · {WEAPON_INFO[loadouts[p.id].weapon].name}
-                    </span>
-                  </>
-                ) : side === 'foe' ? (
-                  <>
-                    <HiddenAvatar size={44} />
-                    <span className="text-ink-400">Hidden</span>
-                  </>
-                ) : (
-                  <span className="grid h-[44px] place-items-center text-ink-400">
-                    <span className="animate-pulse">Choosing…</span>
-                  </span>
-                )}
-              </span>
-            )}
-            {readyIds && (
-              <span className={`font-display text-[10px] font-bold tracking-widest ${readyIds.has(p.id) ? 'text-online' : 'text-ink-400'}`}>
-                {readyIds.has(p.id) ? 'READY ✓' : 'WAITING'}
-              </span>
-            )}
-          </div>
-        ))}
+    <div className={`animate-rise flex flex-col items-center gap-1.5 rounded-xl border p-3 ${big ? 'w-30' : 'w-28'} ${tone}`}>
+      <div className="relative">
+        <Avatar name={p.name} size={big ? 72 : 56} />
+        {readyIds && (
+          <span
+            className={`absolute -right-1 -bottom-1 grid size-5 place-items-center rounded-full ring-2 ring-ink-850 transition ${
+              readyIds.has(p.id) ? 'bg-online text-ink-950' : 'bg-ink-600'
+            }`}
+          >
+            {readyIds.has(p.id) ? <Icon name="check" className="size-3" /> : <span className="size-1.5 animate-pulse rounded-full bg-ink-300" />}
+          </span>
+        )}
       </div>
+      <span className="w-full truncate text-center text-xs font-semibold">{p.name}</span>
+      {loadouts && (
+        <span className="flex w-full flex-col items-center gap-0.5 text-center text-[10px] text-ink-300">
+          {loadouts[p.id] ? (
+            <>
+              <ClassAvatar key={loadouts[p.id].class + loadouts[p.id].weapon} cls={loadouts[p.id].class} weapon={loadouts[p.id].weapon} side={side} size={44} />
+              <span className={`w-full truncate font-display text-[11px] font-bold tracking-[0.14em] uppercase ${side === 'ally' ? 'text-ally' : 'text-foe'}`}>
+                {BUILD[loadouts[p.id].class][loadouts[p.id].weapon]}
+              </span>
+              <span className="w-full truncate text-ink-400" title={`${CLASS_INFO[loadouts[p.id].class].name} · ${WEAPON_INFO[loadouts[p.id].weapon].name}`}>
+                {CLASS_INFO[loadouts[p.id].class].short} · {WEAPON_INFO[loadouts[p.id].weapon].name}
+              </span>
+            </>
+          ) : side === 'foe' ? (
+            <>
+              <HiddenAvatar size={44} />
+              <span className="text-ink-400">Hidden</span>
+            </>
+          ) : (
+            <span className="grid h-[44px] place-items-center text-ink-400">
+              <span className="animate-pulse">Choosing…</span>
+            </span>
+          )}
+        </span>
+      )}
+      {readyIds && (
+        <span className={`font-display text-[10px] font-bold tracking-widest ${readyIds.has(p.id) ? 'text-online' : 'text-ink-400'}`}>
+          {readyIds.has(p.id) ? 'READY ✓' : 'WAITING'}
+        </span>
+      )}
     </div>
   )
 }
@@ -276,25 +255,24 @@ function Lobby({
   const left = counting ? Math.max(0, Math.ceil((Date.parse(match.countdown_ends_at!) - now) / 1000)) : 0
   const closesIn = match.lobby_ends_at && match.status === 'FOUND' ? Math.max(0, Math.ceil((Date.parse(match.lobby_ends_at) - now) / 1000)) : null
 
-  const letters = { next: 0 }
-  const ours = groupsOf(match.teams[match.my_team], me.id, letters)
-  const theirs = groupsOf(match.teams[1 - match.my_team], me.id, letters)
+  const ours = playersOf(match.teams[match.my_team], me.id)
+  const theirs = playersOf(match.teams[1 - match.my_team], me.id)
   const readyIds = new Set(match.ready)
   const total = match.teams.reduce((n, t) => n + t.players.length, 0)
   const ready = readyIds.size
   const allReady = ready >= total
 
-  const team = (side: 'ally' | 'foe', groups: Group[]) => (
+  const team = (side: 'ally' | 'foe', list: QPlayer[]) => (
     <div className={`flex-1 ${side === 'foe' ? 'lg:text-right' : ''}`}>
       <div className={`mb-4 flex items-baseline gap-3 ${side === 'foe' ? 'lg:justify-end' : ''}`}>
         <h2 className={`font-display text-xl font-bold tracking-wider uppercase ${side === 'ally' ? 'text-ally' : 'text-foe'}`}>
           {side === 'ally' ? 'Your team' : 'Opponent team'}
         </h2>
-        <span className="text-sm text-ink-400">{groups.reduce((n, g) => n + g.players.length, 0)} players</span>
+        <span className="text-sm text-ink-400">{list.length} players</span>
       </div>
       <div className={`flex flex-wrap gap-3 ${side === 'foe' ? 'lg:justify-end' : ''}`}>
-        {groups.map((g) => (
-          <GroupBox key={g.players[0].id} g={g} side={side} readyIds={readyIds} big loadouts={match.loadouts} />
+        {list.map((p) => (
+          <PlayerTile key={p.id} p={p} mine={p.id === me.id} side={side} readyIds={readyIds} big loadouts={match.loadouts} />
         ))}
       </div>
     </div>
