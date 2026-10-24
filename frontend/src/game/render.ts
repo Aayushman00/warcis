@@ -2,6 +2,8 @@
    Server is authoritative; this file never decides anything, it only shows server
    snapshots ~INTERP_MS in the past, smoothly. Colors come from tokens.ts. */
 
+import type { ClassId, DecidedBy, WeaponId } from '../api'
+import { drawAvatar, drawWeapon, gunOf } from './classes'
 import { alpha, color, font, team as TC, type Team } from './tokens'
 
 export type { Team }
@@ -9,8 +11,15 @@ export type GPlayer = {
   id: string
   name: string
   team: Team
-  x: number
-  y: number
+  class: ClassId
+  weapon: WeaponId
+  maxHp: number
+  x: number | null // null: an invisible enemy, whose position the server does not send
+  y: number | null
+  hidden: boolean // true exactly when x / y are null
+  invisible: boolean // me or an ally under invisibility (enemies never get this: they get `hidden`)
+  dashing: boolean
+  abilityReadyAt: number | null // mine and my allies' only
   hp: number
   alive: boolean
   respawnAt: number | null
@@ -24,14 +33,19 @@ export type GPlayer = {
   rating: number // server-computed ranking score
 }
 export type GFlag = { team: Team; x: number; y: number; state: 'AT_BASE' | 'CARRIED' | 'DROPPED'; carrierId: string | null; returnAt: number | null }
-export type GShot = { id: number; owner: string; team: Team; x: number; y: number }
+export type GShot = { id: number; owner: string; team: Team; x: number; y: number; w: WeaponId }
+export type GBarrier = { id: number; owner: string; team: Team; x: number; y: number; w: number; h: number; hp: number; maxHp: number; expiresAt: number }
 export type Snapshot = {
   t: 'state'
   now: number
   elapsed: number
-  matchMs: number
+  matchMs: number // regulation; level scores there start sudden death
+  hardStopMs: number // sudden death ends here and the tiebreak decides
+  suddenDeath: boolean // no respawns, next capture wins
   state: 'PLAYING' | 'ENDED'
-  winner: Team | null // ENDED with no winner = tie
+  winner: Team | null // ENDED with no winner = draw
+  decidedBy: DecidedBy | null
+  progress: Record<Team, number> // furthest flag carry this round, % of the way home (the 12:00 tiebreak)
   scores: Record<Team, number>
   round: number
   resumesAt: number | null // set while the intermission after a capture runs
@@ -40,6 +54,7 @@ export type Snapshot = {
   players: GPlayer[]
   flags: GFlag[]
   shots: GShot[]
+  barriers: GBarrier[]
 }
 export type GMap = {
   w: number
@@ -189,9 +204,11 @@ export class Renderer {
     const prev = new Map(A.players.map((p) => [p.id, p]))
     const pos = new Map<string, { x: number; y: number }>()
     for (const p of B.players) {
+      if (p.x === null || p.y === null) continue // invisible enemy: nothing to draw
       const q = prev.get(p.id)
-      const tp = !q || Math.abs(q.x - p.x) + Math.abs(q.y - p.y) > 80
-      pos.set(p.id, tp ? { x: p.x, y: p.y } : { x: q.x + (p.x - q.x) * k, y: q.y + (p.y - q.y) * k })
+      // slide from the previous snapshot, but snap after a teleport (respawn) or when the player just became visible
+      const from = q && q.x !== null && q.y !== null && Math.abs(q.x - p.x) + Math.abs(q.y - p.y) <= 80 ? { x: q.x, y: q.y } : null
+      pos.set(p.id, from ? { x: from.x + (p.x - from.x) * k, y: from.y + (p.y - from.y) * k } : { x: p.x, y: p.y })
     }
     const mine = B.players.find((p) => p.id === this.me)
 
@@ -201,7 +218,9 @@ export class Renderer {
       else if (f.state === 'DROPPED') this.drawDropped(ctx, f, t)
     }
 
-    // Shots with a short trail.
+    for (const b of B.barriers) this.drawBarrier(ctx, b, t)
+
+    // Shots with a short trail (a long bright streak for the sniper, a stub for pellets).
     const prevShots = new Map(A.shots.map((s) => [s.id, s]))
     ctx.lineCap = 'round'
     for (const s of B.shots) {
@@ -212,20 +231,21 @@ export class Renderer {
       const len = Math.hypot(s.x - q.x, s.y - q.y) || 1
       const dx = (s.x - q.x) / len
       const dy = (s.y - q.y) / len
-      const g = ctx.createLinearGradient(x - dx * 28, y - dy * 28, x, y)
+      const tail = s.w === 'SNIPER_RIFLE' ? 80 : s.w === 'SHOTGUN' ? 12 : 28
+      const g = ctx.createLinearGradient(x - dx * tail, y - dy * tail, x, y)
       g.addColorStop(0, alpha(TC[s.team].base, 0))
       g.addColorStop(1, TC[s.team].light)
       ctx.strokeStyle = g
-      ctx.lineWidth = 3
+      ctx.lineWidth = s.w === 'SNIPER_RIFLE' ? 2.2 : s.w === 'SHOTGUN' ? 2 : 3
       ctx.beginPath()
-      ctx.moveTo(x - dx * 28, y - dy * 28)
+      ctx.moveTo(x - dx * tail, y - dy * tail)
       ctx.lineTo(x, y)
       ctx.stroke()
       ctx.shadowColor = TC[s.team].base
-      ctx.shadowBlur = 8
+      ctx.shadowBlur = s.w === 'SNIPER_RIFLE' ? 14 : 8
       ctx.fillStyle = '#FFFFFF'
       ctx.beginPath()
-      ctx.arc(x, y, this.map.shotR - 0.5, 0, TAU)
+      ctx.arc(x, y, this.map.shotR - (s.w === 'SHOTGUN' ? 1.6 : 0.5), 0, TAU)
       ctx.fill()
       ctx.shadowBlur = 0
     }
@@ -248,11 +268,47 @@ export class Renderer {
     }
 
     // Players; me last so I'm always on top.
-    const order = B.players.filter((p) => p.alive).sort((a, b) => Number(a.id === this.me) - Number(b.id === this.me))
+    const order = B.players.filter((p) => p.alive && pos.has(p.id)).sort((a, b) => Number(a.id === this.me) - Number(b.id === this.me))
     for (const p of order) this.drawPlayer(ctx, p, pos.get(p.id)!, t, B)
     if (mine?.alive && mine.carryingFlag) this.drawHomeArrow(ctx, pos.get(mine.id)!, mine.team, t)
 
     this.drawEffects(ctx, t)
+  }
+
+  private drawBarrier(ctx: CanvasRenderingContext2D, b: GBarrier, t: number) {
+    const c = TC[b.team]
+    const left = b.expiresAt - t
+    const fade = left < 1200 ? 0.45 + 0.4 * Math.sin(t / 70) : 1 // flickers out in its last second
+    ctx.save()
+    ctx.globalAlpha = 0.9 * fade
+    ctx.shadowColor = c.base
+    ctx.shadowBlur = 12
+    ctx.fillStyle = alpha(c.deep, 0.85)
+    ctx.beginPath()
+    ctx.roundRect(b.x, b.y, b.w, b.h, 3)
+    ctx.fill()
+    ctx.shadowBlur = 0
+    ctx.strokeStyle = c.light
+    ctx.lineWidth = 1.5
+    ctx.stroke()
+    // cracks as it takes damage
+    const hurt = 1 - b.hp / b.maxHp
+    ctx.strokeStyle = alpha('#FFFFFF', 0.5)
+    ctx.lineWidth = 1
+    ctx.beginPath()
+    const long = b.h >= b.w
+    for (let i = 1; i <= Math.floor(hurt * 6); i++) {
+      const f = (i * 0.37) % 1
+      if (long) {
+        ctx.moveTo(b.x, b.y + b.h * f)
+        ctx.lineTo(b.x + b.w, b.y + b.h * ((f + 0.12) % 1))
+      } else {
+        ctx.moveTo(b.x + b.w * f, b.y)
+        ctx.lineTo(b.x + b.w * ((f + 0.12) % 1), b.y + b.h)
+      }
+    }
+    ctx.stroke()
+    ctx.restore()
   }
 
   private drawBases(ctx: CanvasRenderingContext2D, s: Snapshot, t: number, mine?: GPlayer) {
@@ -394,7 +450,8 @@ export class Renderer {
     a.lastX = x
     a.lastY = y
     const facing = isMe && this.myAim !== null && t - a.shotAt > 350 ? this.myAim : a.facing
-    const dim = p.connected ? 1 : 0.4
+    // An invisible ally (or me) is a faint shimmer; enemies that are invisible are never drawn at all.
+    const dim = (p.connected ? 1 : 0.4) * (p.invisible ? 0.3 + 0.08 * Math.sin(t / 130) : 1)
     ctx.globalAlpha = dim
 
     // ground shadow
@@ -418,6 +475,16 @@ export class Renderer {
     ctx.save()
     ctx.translate(x, y)
     ctx.rotate(facing)
+    // dash afterimages, trailing behind the way we are facing
+    if (p.dashing) {
+      for (let i = 3; i >= 1; i--) {
+        ctx.save()
+        ctx.globalAlpha = dim * (0.32 - i * 0.07)
+        ctx.translate(-i * 12, 0)
+        drawAvatar(ctx, p.class, c, R, 1, t)
+        ctx.restore()
+      }
+    }
     // feet
     const swing = moving ? Math.sin(a.walk) * 5 : 0
     ctx.fillStyle = c.deep
@@ -426,45 +493,23 @@ export class Renderer {
       ctx.ellipse(swing * side - 1, side * R * 0.55, 5, 3.6, 0, 0, TAU)
       ctx.fill()
     }
-    // weapon (with recoil)
+    // weapon (with recoil): the silhouette tells the rifle, shotgun and sniper apart
     const recoil = Math.max(0, 1 - (t - a.shotAt) / 90) * 4
-    ctx.fillStyle = '#0B1017'
-    ctx.beginPath()
-    ctx.roundRect(R * 0.2 - recoil, -3.5, R + 6, 7, 2)
-    ctx.fill()
-    ctx.fillStyle = '#3A4557'
-    ctx.fillRect(R * 0.2 - recoil + 2, -3.5, R + 2, 2)
-    // body: dark rim, team fill, light rim on the lit side
-    const breathe = moving ? 1 : 1 + Math.sin(t / 420) * 0.025
-    ctx.fillStyle = '#0B1017'
-    ctx.beginPath()
-    ctx.arc(0, 0, (R + 1.5) * breathe, 0, TAU)
-    ctx.fill()
-    const g = ctx.createRadialGradient(-R * 0.35, -R * 0.35, 1, 0, 0, R)
-    g.addColorStop(0, c.light)
-    g.addColorStop(0.55, c.base)
-    g.addColorStop(1, c.deep)
-    ctx.fillStyle = g
-    ctx.beginPath()
-    ctx.arc(0, 0, R * breathe, 0, TAU)
-    ctx.fill()
-    // visor facing forward
-    ctx.fillStyle = '#081019'
-    ctx.beginPath()
-    ctx.ellipse(R * 0.42, 0, 3.8, 7.5, 0, 0, TAU)
-    ctx.fill()
-    ctx.fillStyle = c.ink
-    ctx.fillRect(R * 0.42, -4.5, 1.6, 3.5)
+    const gun = gunOf(p.weapon, R)
+    drawWeapon(ctx, p.weapon, c, R, recoil)
+    // body: the class silhouette in the team's colors
+    drawAvatar(ctx, p.class, c, R, moving ? 1 : 1 + Math.sin(t / 420) * 0.025, t)
     // muzzle flash
     if (t - a.shotAt < 70) {
+      const m = gun.len + R * 0.2
       ctx.fillStyle = '#FFF6D6'
       ctx.shadowColor = c.light
       ctx.shadowBlur = 12
       ctx.beginPath()
-      ctx.moveTo(R + 12, 0)
-      ctx.lineTo(R + 7, -4)
-      ctx.lineTo(R + 17, 0)
-      ctx.lineTo(R + 7, 4)
+      ctx.moveTo(m + 6, 0)
+      ctx.lineTo(m + 1, -4)
+      ctx.lineTo(m + 11, 0)
+      ctx.lineTo(m + 1, 4)
       ctx.closePath()
       ctx.fill()
       ctx.shadowBlur = 0
@@ -496,15 +541,15 @@ export class Renderer {
 
     // HP (others only; mine lives in the HUD) + name
     const top = y - R - (carried ? 30 : 12)
-    if (!isMe && p.hp < 100) {
+    if (!isMe && p.hp < p.maxHp) {
       const bw = 30
       ctx.fillStyle = alpha('#000000', 0.6)
       ctx.beginPath()
       ctx.roundRect(x - bw / 2 - 1, top - 1, bw + 2, 5, 2)
       ctx.fill()
-      ctx.fillStyle = p.hp > 50 ? color.hpHigh : p.hp > 25 ? color.hpMid : color.hpLow
+      ctx.fillStyle = p.hp > p.maxHp / 2 ? color.hpHigh : p.hp > p.maxHp / 4 ? color.hpMid : color.hpLow
       ctx.beginPath()
-      ctx.roundRect(x - bw / 2, top, (bw * p.hp) / 100, 3, 1.5)
+      ctx.roundRect(x - bw / 2, top, (bw * p.hp) / p.maxHp, 3, 1.5)
       ctx.fill()
     }
     if (isMe) {

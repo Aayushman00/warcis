@@ -12,7 +12,9 @@ Priorities (first that applies wins):
   5.   an enemy is visible          -> close in on the nearest one
   6.   nothing to do               -> patrol own side / midfield
 Shooting runs alongside movement: nearest visible enemy, after a short reaction delay,
-with a little aim error.
+with a little aim error. The fire pace and range follow the bot's own weapon, and Q is used the way
+its class is meant to be: a dash to escape with the flag, a barrier against an incoming enemy, a cloak
+on the way to the enemy flag or to ambush a carrier. Invisible enemies arrive without coordinates and are simply not seen.
 """
 
 import math
@@ -23,12 +25,15 @@ CELL = 20
 SIGHT = 520  # px: bots don't snipe across the whole map
 REACTION_S = 0.3
 AIM_SD = 0.06  # radians of aim noise
-FIRE_GAP_S = (0.55, 0.75)  # server cooldown is 0.5 s; bots don't hit it frame-perfectly
+FIRE_SLACK = (1.05, 1.4)  # bots wait this much longer than the server cooldown: they never hit it frame-perfectly
+FIRE_RANGE = {"ASSAULT_RIFLE": 520, "SHOTGUN": 230, "SNIPER_RIFLE": 800}  # px: where each weapon is worth firing
+SIGHT_BY_WEAPON = {"SNIPER_RIFLE": 800}
 
 
 class Brain:
-    def __init__(self, me: str, gmap: dict, rng: random.Random | None = None):
+    def __init__(self, me: str, gmap: dict, rng: random.Random | None = None, catalog: dict | None = None):
         self.me, self.map, self.rng = me, gmap, rng or random.Random()
+        self.catalog = catalog  # {classes, weapons} from the server hello; only used to pace shots
         self.w, self.h, self.r = gmap["w"], gmap["h"], gmap["playerR"]
         self.cols, self.rows = self.w // CELL, self.h // CELL
         self.free = [[not self._blocked((c + 0.5) * CELL, (r + 0.5) * CELL) for c in range(self.cols)] for r in range(self.rows)]
@@ -124,8 +129,9 @@ class Brain:
         if self.me not in mates:
             mates = sorted(p["id"] for p in s["players"] if p["team"] == team)
         attacker = mates.index(self.me) != 1
-        enemies = [p for p in s["players"] if p["team"] != team and p["alive"]]
-        visible = [e for e in enemies if math.dist(pos, (e["x"], e["y"])) <= SIGHT and self.clear(pos, (e["x"], e["y"]), pad=4, step=10)]
+        sight = SIGHT_BY_WEAPON.get(me.get("weapon"), SIGHT)
+        enemies = [p for p in s["players"] if p["team"] != team and p["alive"] and p["x"] is not None]  # invisible: no coordinates
+        visible = [e for e in enemies if math.dist(pos, (e["x"], e["y"])) <= sight and self.clear(pos, (e["x"], e["y"]), pad=4, step=10)]
         vis_ids = {e["id"] for e in visible}
         self.seen = {i: self.seen.get(i, now) for i in vis_ids}
 
@@ -145,14 +151,49 @@ class Brain:
         else:
             goal = self._patrol(team, base if not attacker else None, now)  # 6
         out = self._steer(pos, goal, now)
+        out += self._ability(s, me, pos, goal, visible, own, enemy_flag, attacker)
 
-        target = min(visible, key=lambda e: (not e["carryingFlag"], math.dist(pos, (e["x"], e["y"]))), default=None)
+        reach = FIRE_RANGE.get(me.get("weapon"), SIGHT)
+        shootable = [e for e in visible if math.dist(pos, (e["x"], e["y"])) <= reach]
+        target = min(shootable, key=lambda e: (not e["carryingFlag"], math.dist(pos, (e["x"], e["y"]))), default=None)
         if target and now - self.seen[target["id"]] >= REACTION_S and now >= self.next_fire:
             ang = math.atan2(target["y"] - pos[1], target["x"] - pos[0]) + self.rng.gauss(0, AIM_SD)
             d = math.dist(pos, (target["x"], target["y"]))
             out.append({"t": "fire", "x": round(pos[0] + math.cos(ang) * d, 1), "y": round(pos[1] + math.sin(ang) * d, 1)})
-            self.next_fire = now + self.rng.uniform(*FIRE_GAP_S)
+            self.next_fire = now + self._cooldown_s(me) * self.rng.uniform(*FIRE_SLACK)
         return out
+
+    def _cooldown_s(self, me: dict) -> float:
+        c = self.catalog
+        if not c or me.get("weapon") not in c["weapons"]:
+            return 0.5
+        return c["weapons"][me["weapon"]]["cooldownMs"] * c["classes"][me["class"]]["fireMult"] / 1000
+
+    def _ability(self, s: dict, me: dict, pos, goal, visible, own, enemy_flag, attacker) -> list[dict]:
+        """Q, when it is ready and worth it. The server enforces the real rules; this only picks the moment."""
+        ready_at = me.get("abilityReadyAt")
+        if ready_at is None or s["now"] < ready_at:
+            return []
+        near = [e for e in visible if math.dist(pos, (e["x"], e["y"])) < 320]
+        kind = me.get("class")
+        if kind == "ASSAULTER":
+            # Run for it: with the flag and an enemy close, or when sprinting at a goal that is far away.
+            if (me["carryingFlag"] and near) or (self.path and math.dist(pos, goal) > 420 and self.rng.random() < 0.15):
+                tx, ty = self.path[0] if self.path else goal
+                return [{"t": "ability", "x": round(tx, 1), "y": round(ty, 1)}]
+        elif kind == "GUARDIAN":
+            if near:  # a slab between us and the nearest enemy
+                e = min(near, key=lambda e: math.dist(pos, (e["x"], e["y"])))
+                return [{"t": "ability", "x": e["x"], "y": e["y"]}]
+        elif kind == "ASSASSIN":
+            # Cloak to sneak up on the enemy flag (attacker), to ambush our flag's carrier or an enemy
+            # closing in on a defender, or to slip away when hurt. Defenders used to never cloak at all.
+            steal = attacker and enemy_flag["state"] != "CARRIED" and math.dist(pos, (enemy_flag["x"], enemy_flag["y"])) < 650
+            ambush = (own["state"] == "CARRIED" and math.dist(pos, (own["x"], own["y"])) < 450) or (near and not attacker)
+            hurt = near and me["hp"] <= 0.4 * me.get("maxHp", 100)
+            if not me["carryingFlag"] and (steal or ambush or hurt):
+                return [{"t": "ability", "x": pos[0], "y": pos[1]}]
+        return []
 
     def _patrol(self, team: str, guard, now: float):
         """Defenders circle their own base; everyone else roams own side / midfield."""
@@ -203,7 +244,7 @@ if __name__ == "__main__":  # self-check against the real map/rules: python scri
     import sys
 
     sys.path.insert(0, "services/game-service")
-    from app.sim import MAP, TEAMS, Game
+    from app.sim import CATALOG, CLASS, MAP, TEAMS, WEAPON, Game
 
     # Navigation: every spawn reaches the enemy flag around the centre block and lane walls.
     b = Brain("x", MAP, random.Random(1))
@@ -211,35 +252,46 @@ if __name__ == "__main__":  # self-check against the real map/rules: python scri
         path = b.find_path((sx, sy), (1200 - sx, 350))
         assert all(b.clear(p, q, pad=14) for p, q in zip([(sx, sy)] + path, path)), "path cuts through a wall"
 
-    def play(n: int, seed: int, max_s: float = 620):
+    def play(n: int, seed: int, max_s: float = 740):  # past the 12:00 hard stop
         """Run bots-only n v n against the real sim at 30 Hz; bots think at 10 Hz."""
         rng = random.Random(seed)
-        g = Game([[{"id": f"r{i}"} for i in range(n)], [{"id": f"b{i}"} for i in range(n)]], 0)
-        brains = {pid: Brain(pid, MAP, random.Random(rng.random())) for pid in g.players}
-        seen = {"fire": 0, "deaths": 0, "stolen": 0}
+        combos = [{"class": c, "weapon": w} for c in CLASS for w in WEAPON]  # every class and weapon appears, mixed
+        pick = lambda i: combos[(i * 4 + seed) % len(combos)]  # noqa: E731
+        g = Game([[{"id": f"r{i}", **pick(i)} for i in range(n)], [{"id": f"b{i}", **pick(i + n)} for i in range(n)]], 0)
+        brains = {pid: Brain(pid, MAP, random.Random(rng.random()), CATALOG) for pid in g.players}
+        seen = {"fire": 0, "deaths": 0, "stolen": 0, "q": {c: 0 for c in CLASS}}
         t = 0
         while t < max_s * 1000 and not g.ended:
             t += 33
             g.step(t)
             if t % 99 == 0:
-                snap = g.snapshot(t)
-                dead = {p["id"] for p in snap["players"] if not p["alive"]}
+                full = g.snapshot(t)
+                dead = {p["id"] for p in full["players"] if not p["alive"]}
                 seen["deaths"] += len(dead - seen.setdefault("dead", set()))
                 seen["dead"] = dead
-                seen["stolen"] += sum(f["state"] == "CARRIED" for f in snap["flags"])
+                seen["stolen"] += sum(f["state"] == "CARRIED" for f in full["flags"])
                 for pid, br in brains.items():
+                    snap = g.snapshot(t, viewer_team=g.players[pid].team)  # the same filtered view a socket gets
                     for m in br.think(snap, t / 1000):
                         if m["t"] == "input":
                             g.set_keys(pid, m)
+                        elif m["t"] == "ability":
+                            seen["q"][g.players[pid].pclass] += g.players[pid].ability_ready_at <= t
+                            g.ability(pid, m["x"], m["y"], t)
                         else:
                             seen["fire"] += 1
                             g.fire(pid, m["x"], m["y"], t)
         return g, t, seen
 
+    used = {c: 0 for c in CLASS}
     for n in (1, 2, 4):
         g, t, seen = play(n, seed=n)
         assert seen["fire"] > 0 and seen["stolen"] > 0 and seen["deaths"] > 0, seen
         assert g.ended, f"{n}v{n} bots-only match did not finish in time"
-        result = f"{TEAMS[g.winner]} won" if g.winner is not None else "tie"
-        print(f"{n}v{n} bots: {result} after {t / 1000:.0f}s game time, {seen['fire']} shots, {seen['deaths']} deaths, flag held {seen['stolen']} samples")
+        on_field = {p.pclass for p in g.players.values()}
+        assert all(seen["q"][c] for c in on_field), f"{n}v{n}: a class on the field never used Q: {seen['q']}"
+        used = {c: used[c] + seen["q"][c] for c in CLASS}
+        result = f"{TEAMS[g.winner]} won ({g.decided_by})" if g.winner is not None else "draw"
+        print(f"{n}v{n} bots: {result} after {t / 1000:.0f}s game time, {seen['fire']} shots, {seen['deaths']} deaths, flag held {seen['stolen']} samples, Q {seen['q']}")
+    assert all(used.values()), f"a class never used Q: {used}"
     print("bot_ai ok")

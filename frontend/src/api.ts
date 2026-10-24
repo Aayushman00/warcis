@@ -88,6 +88,61 @@ export interface SocialState {
 }
 
 export type QPlayer = { id: string; name: string; tag: string }
+export type TeamName = 'RED' | 'BLUE'
+export type ClassId = 'ASSAULTER' | 'GUARDIAN' | 'ASSASSIN'
+export type WeaponId = 'ASSAULT_RIFLE' | 'SHOTGUN' | 'SNIPER_RIFLE'
+/** How a match ended: first to 3, higher score at 10:00, a sudden-death capture, or the 12:00 tiebreak (objective, kills, draw). */
+export type DecidedBy = 'ROUNDS' | 'SCORE' | 'SUDDEN_DEATH' | 'OBJECTIVE' | 'KILLS' | 'DRAW'
+/** What a player takes into the match; chosen in the match lobby, stored and enforced by the server. */
+export interface Loadout {
+  class: ClassId
+  weapon: WeaponId
+}
+/** One player's line in a finished match (written by game-service, stored on the match document). */
+export interface PlayerResult {
+  id: string
+  name: string
+  team: TeamName
+  outcome: 'WIN' | 'LOSS' | 'TIE'
+  kills: number
+  deaths: number
+  captures: number
+  class?: ClassId // absent on matches played before classes existed
+  weapon?: WeaponId
+}
+export interface MatchResult {
+  winner: TeamName | 'TIE' // TIE = a draw
+  decided_by?: DecidedBy | null // absent on matches played before sudden death existed
+  progress?: Record<TeamName, number> // furthest flag carry in the last round, % of the way home
+  scores?: Record<TeamName, number> // absent on matches played before rounds existed
+  capturer: string | null
+  duration_ms: number
+  ended_at: string | null
+  players: PlayerResult[]
+}
+export interface HistoryItem extends MatchResult {
+  match_id: string
+  mode: string
+  played_at: string
+  outcome: 'WIN' | 'LOSS' | 'TIE'
+  my_team: TeamName
+  me: { kills: number; deaths: number; captures: number }
+}
+export interface HistoryPage {
+  items: HistoryItem[]
+  next_before: string | null
+}
+/** Career totals, aggregated from finished matches by matchmaking-service. */
+export interface PlayerStats {
+  matches: number
+  wins: number
+  losses: number
+  kills: number
+  deaths: number
+  captures: number
+  kd: number
+  win_rate: number | null
+}
 export interface TeamDTO {
   players: QPlayer[]
   parties: { party_id: string; players: string[] }[]
@@ -101,7 +156,11 @@ export interface MatchDTO {
   my_team: number
   ready: string[]
   entered: string[]
+  /** Your team's picks while the lobby is open; both teams' once the match is running. Never the enemy's earlier. */
+  loadouts: Record<string, Loadout>
+  lobby_ends_at: string | null // the server's deadline for the whole lobby
   countdown_ends_at: string | null
+  result: MatchResult | null // set once the game is over
 }
 export type QueueDTO = {
   mode: 'SQUAD'

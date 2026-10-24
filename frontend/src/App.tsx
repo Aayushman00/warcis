@@ -1,14 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { api, setUnauthorizedHandler, token, type MMStatus, type PartyDTO, type SocialState } from './api'
+import { api, setUnauthorizedHandler, token, type MMStatus, type PartyDTO, type PlayerStats, type SocialState } from './api'
 import { Auth } from './Auth'
 import { MAX_PARTY, type Mode, type Player, type Status } from './data'
 import { FriendsPage, FriendsSidebar, Home, PartyPage, type Ctx, type Party, type View } from './Hub'
 import { Matchmaking } from './Matchmaking'
+import { Profile } from './Profile'
 import { Avatar, AvatarStatus, Icon, Logo, StatusDot } from './ui'
 
 const POLL_MS = 1500 // ponytail: HTTP polling for social + queue state; move to SSE/WebSocket when load matters
 const HEARTBEAT_MS = 10_000
 const PING_MS = 3000
+const STATS_MS = 30_000 // career stats change only when a match ends, so they are not part of the 1.5 s poll
+const MAX_STATS_IDS = 50 // the server's cap per request
 
 export default function App() {
   const [me, setMe] = useState<Player | null>(null)
@@ -56,6 +59,8 @@ function Launcher({ me, setMe }: { me: Player; setMe: (p: Player | null) => void
   const [toast, setToast] = useState<string | null>(null)
   const [menu, setMenu] = useState(false)
   const [ping, setPing] = useState<number | null>(null)
+  const [stats, setStats] = useState<Record<string, PlayerStats>>({})
+  const [statsTick, setStatsTick] = useState(0)
   const prev = useRef<SocialState | null>(null)
   const lastNotice = useRef<string | null>(null)
 
@@ -120,6 +125,26 @@ function Launcher({ me, setMe }: { me: Player; setMe: (p: Player | null) => void
   const partyInvite = social?.invitations[0] ?? null
   const queueing = mm.state !== 'idle'
 
+  // Career stats for me + my friends (profile and friends list). Refetched when the friend list
+  // changes, on a slow timer, and right after a match ends (statsTick).
+  const statsIds = [me.id, ...friends.map((f) => f.id)].slice(0, MAX_STATS_IDS).join(',')
+  useEffect(() => {
+    const load = () =>
+      void api<Record<string, PlayerStats>>(`/matchmaking/stats?ids=${statsIds}`)
+        .then(setStats)
+        .catch(() => {}) // stats are decoration: keep showing the last good numbers
+    load()
+    const i = setInterval(load, STATS_MS)
+    return () => clearInterval(i)
+  }, [statsIds, statsTick])
+
+  const wasInMatch = useRef(false)
+  useEffect(() => {
+    const inMatch = mm.state === 'entered'
+    if (wasInMatch.current && !inMatch) setStatsTick((n) => n + 1) // left the finished game: numbers moved
+    wasInMatch.current = inMatch
+  }, [mm.state])
+
   // Lobby ping: time a no-op round trip to the gateway. Off while queueing; the match has its own.
   useEffect(() => {
     if (queueing) return
@@ -149,6 +174,7 @@ function Launcher({ me, setMe }: { me: Player; setMe: (p: Player | null) => void
     mode,
     fill,
     activity,
+    stats,
     isLeader,
     slotsUsed,
     setView,
@@ -208,10 +234,11 @@ function Launcher({ me, setMe }: { me: Player; setMe: (p: Player | null) => void
   }
 
   const online = friends.filter((f) => f.status !== 'offline').length
-  const nav: { id: View; label: string; icon: 'home' | 'users' | 'party'; badge?: string }[] = [
+  const nav: { id: View; label: string; icon: 'home' | 'users' | 'party' | 'chart'; badge?: string }[] = [
     { id: 'home', label: 'Home', icon: 'home' },
     { id: 'friends', label: 'Friends', icon: 'users', badge: requestsIn.length ? String(requestsIn.length) : undefined },
     { id: 'party', label: 'Party', icon: 'party', badge: `${party.members.length}/${MAX_PARTY}` },
+    { id: 'profile', label: 'Profile', icon: 'chart' },
   ]
 
   return (
@@ -276,6 +303,13 @@ function Launcher({ me, setMe }: { me: Player; setMe: (p: Player | null) => void
                     </button>
                   ))}
                   <div className="my-1 h-px bg-white/5" />
+                  <button
+                    onClick={() => (setMenu(false), !queueing && setView('profile'))}
+                    disabled={queueing}
+                    className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-sm hover:bg-white/5 disabled:opacity-40"
+                  >
+                    <Icon name="chart" /> Profile
+                  </button>
                   <button onClick={signOut} className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-sm text-foe hover:bg-white/5">
                     <Icon name="logout" /> Sign out
                   </button>
@@ -294,12 +328,16 @@ function Launcher({ me, setMe }: { me: Player; setMe: (p: Player | null) => void
               me={me}
               onCancel={() => act(() => api('/matchmaking/queue', { method: 'DELETE' }), 'Left matchmaking queue')}
               onReady={(id) => act(() => api(`/matchmaking/matches/${id}/ready`, { method: 'POST' }))}
+              onLoadout={(id, loadout) => act(() => api(`/matchmaking/matches/${id}/loadout`, { method: 'PUT', body: loadout }))}
               onExit={(id) => act(() => api(`/matchmaking/matches/${id}/leave`, { method: 'POST' }), 'Match completed · returned to hub')}
+              rematch={{ canQueue: isLeader, leaderName: party.members.find((m) => m.id === party.leaderId)?.name ?? null, onQueue: ctx.matchmake }}
             />
           ) : view === 'home' ? (
             <Home {...ctx} />
           ) : view === 'friends' ? (
             <FriendsPage {...ctx} />
+          ) : view === 'profile' ? (
+            <Profile me={me} stats={stats[me.id]} />
           ) : (
             <PartyPage {...ctx} />
           )}

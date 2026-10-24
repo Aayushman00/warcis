@@ -5,7 +5,7 @@
 
 Each entry in BOT_PARTIES is one party (size 1-4). Bots befriend their leader, join the
 party and idle until a human has searched alone for 15-20 s (JOIN_DELAY_S), then queue for
-Squad, ready up instantly on MATCH FOUND and play Capture The Flag over the same WebSocket protocol as the browser (brain: bot_ai.py). When the game
+Squad, pick a random class and weapon in the match lobby, ready up instantly and play Capture The Flag over the same WebSocket protocol as the browser (brain: bot_ai.py). When the game
 ends they return to the hub; they leave the queue if the human stops searching. 2+1+3+1 = 7 bots: one human is enough to
 complete a 4v4. If the game-service restarts mid-match, each bot reconnects on its own.
 """
@@ -23,6 +23,8 @@ from api import API, ApiFail, Client
 from bot_ai import Brain
 
 PASSWORD = os.environ.get("BOT_PASSWORD", "botpass123")
+CLASSES = ("ASSAULTER", "GUARDIAN", "ASSASSIN")
+WEAPONS = ("ASSAULT_RIFLE", "SHOTGUN", "SNIPER_RIFLE")
 SIZES = [int(s) for s in os.environ.get("BOT_PARTIES", "2,1,3,1").split(",") if s.strip()]
 NAMES = ["Nocturne", "Rook", "Zephyr", "Calyx", "Ironwren", "Pax", "Dusk", "Morrow", "Kestrel", "Nimbus",
          "Tallis", "Orrin", "Vex", "Saltmoth", "Juno", "Brask"]
@@ -109,7 +111,9 @@ def main() -> None:
                 m = s["match"]
                 mid = m["match_id"]
                 for b in g:
-                    if b.me["id"] not in m["ready"]:  # bots accept instantly
+                    if b.me["id"] not in m["ready"]:  # bots pick a loadout in the lobby, then accept instantly
+                        if b.me["id"] not in m["loadouts"]:
+                            quiet(b.call, "PUT", f"/matchmaking/matches/{mid}/loadout", {"class": random.choice(CLASSES), "weapon": random.choice(WEAPONS)})
                         quiet(b.call, "POST", f"/matchmaking/matches/{mid}/ready")
                 if s["state"] != "entered":  # the server starts the match after its countdown
                     continue
@@ -137,14 +141,14 @@ def play_match(token: str, name: str, match_id: str) -> None:
                 if lost_since:
                     print(f"[bots] {name} reconnected to {match_id[:8]}", flush=True)
                 lost_since = None
-                brain = brain or Brain(hello["you"], hello["map"], random.Random())
+                brain = brain or Brain(hello["you"], hello["map"], random.Random(), hello.get("catalog"))
                 next_think = 0.0
                 while True:
                     msg = json.loads(ws.recv(timeout=5))
                     if msg["t"] != "state":
                         continue
                     if msg["state"] == "ENDED":
-                        print(f"[bots] {name}: {msg['winner'] + ' TEAM WINS' if msg['winner'] else 'TIE'}", flush=True)
+                        print(f"[bots] {name}: {msg['winner'] + ' TEAM WINS' if msg['winner'] else 'DRAW'} ({msg['decidedBy']})", flush=True)
                         time.sleep(3)  # let humans read the end screen before the match empties
                         break
                     now = time.monotonic()
