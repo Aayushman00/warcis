@@ -76,6 +76,7 @@ function tiebreakLine(f: { decidedBy: DecidedBy | null; progress: Record<Team, n
   )
 }
 const cap = (t: Team) => t[0] + t.slice(1).toLowerCase()
+const ROUNDS_TO_WIN = 3 // mirrors game-service sim.ROUNDS_TO_WIN, display only
 const clock = (ms: number) => {
   const s = Math.max(0, Math.floor(ms / 1000))
   return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`
@@ -229,6 +230,7 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
   const respawnEl = useRef<HTMLSpanElement>(null)
   const resumeEl = useRef<HTMLElement>(null)
   const ringEl = useRef<SVGCircleElement>(null)
+  const lastHp = useRef<number | null>(null)
   const tl = useRef(new Timeline())
   const rend = useRef<Renderer | null>(null)
   const [map, setMap] = useState<GMap | null>(null)
@@ -503,7 +505,11 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
       const t = tl.current.renderTime()
       // Regulation counts down to 10:00; sudden death then counts down the 2 minutes to the tiebreak.
       const elapsed = s.state === 'ENDED' ? s.elapsed : s.elapsed - (s.now - t)
-      if (clockEl.current) clockEl.current.textContent = clock((s.suddenDeath ? s.hardStopMs : s.matchMs) - elapsed)
+      const remaining = (s.suddenDeath ? s.hardStopMs : s.matchMs) - elapsed
+      if (clockEl.current) {
+        clockEl.current.textContent = clock(remaining)
+        clockEl.current.parentElement?.classList.toggle('is-low', s.state === 'PLAYING' && remaining > 0 && remaining <= 10_000)
+      }
       if (s.resumesAt && resumeEl.current) resumeEl.current.textContent = String(Math.max(1, Math.ceil((s.resumesAt - t) / 1000)))
       const mine = s.players.find((p) => p.id === me.id)
       if (mine?.respawnAt) {
@@ -573,10 +579,13 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
           <span className="g-team-name">
             {t}
           </span>
-          <span className="g-pips" aria-label={`${alive} of ${hud?.roster[t].length ?? 0} ${t.toLowerCase()} players alive`}>
+          <span className="g-pips" title="Players alive" aria-label={`${alive} of ${hud?.roster[t].length ?? 0} ${t.toLowerCase()} players alive`}>
             {(hud?.roster[t] ?? []).map((p) => (
               <i key={p.id} className={`g-pip ${p.alive ? '' : 'is-down'} ${p.connected ? '' : 'is-offline'}`} />
             ))}
+          </span>
+          <span className="g-alive" aria-hidden>
+            {alive}/{hud?.roster[t].length ?? 0} alive
           </span>
           {f && f.state !== 'AT_BASE' && (
             <span className={`g-flagtab ${f.state === 'CARRIED' ? 'is-taken' : f.state === 'DROPPED' ? 'is-dropped' : ''}`}>
@@ -609,20 +618,25 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
 
   const won = final?.winner ? final.winner === (myTeam ?? 'BLUE') : null // everyone is shown as BLUE (see viewOf)
   const carrying = !!mine?.carrying && !hud?.ended
+  const hpHit = mine && lastHp.current !== null && mine.hp < lastHp.current // flash the bar when health drops
   const hpColor = !mine ? color.hpHigh : mine.hp > mine.maxHp / 2 ? color.hpHigh : mine.hp > mine.maxHp / 4 ? color.hpMid : color.hpLow
+
+  useEffect(() => {
+    lastHp.current = mine?.hp ?? null
+  })
 
   return (
     <div className="g-root" style={cssVars() as CSSProperties}>
       {ping !== null && !hud?.ended && (
         <span className="g-ping" title="Round-trip time to the match server" style={{ color: ping < 80 ? color.hpHigh : ping < 150 ? color.hpMid : color.hpLow }}>
-          {ping} ms
+          {ping < 1 ? '<1' : ping} ms
         </span>
       )}
       <header className="g-plate" aria-label="Match score">
         {wing('BLUE')}
         <div className="g-clock">
           <span ref={clockEl}>10:00</span>
-          {hud && !hud.ended && <small className={`g-round-tag ${hud.suddenDeath ? 'is-sudden' : ''}`}>{hud.suddenDeath ? 'SUDDEN DEATH' : `ROUND ${hud.round}`}</small>}
+          {hud && !hud.ended && <small className={`g-round-tag ${hud.suddenDeath ? 'is-sudden' : ''}`}>{hud.suddenDeath ? 'SUDDEN DEATH' : `ROUND ${hud.round} · FIRST TO ${ROUNDS_TO_WIN}`}</small>}
         </div>
         {wing('RED')}
       </header>
@@ -766,11 +780,10 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
             {!mine?.alive && <div className={`g-me-state ${mine ? 'is-down' : ''}`}>{mine ? 'Eliminated' : 'Spectating'}</div>}
           </div>
           {mine && (
-            <div className="g-hp" aria-label={`Health ${mine.hp}`}>
-              <span className="g-hp-seg" style={{ ['--hp' as string]: hpColor } as CSSProperties}>
-                {[0, 1, 2, 3].map((i) => (
-                  <i key={i} className={mine.hp >= ((i + 1) * mine.maxHp) / 4 ? '' : 'is-empty'} />
-                ))}
+            <div className="g-hp" role="meter" aria-label="Health" aria-valuemin={0} aria-valuemax={mine.maxHp} aria-valuenow={mine.hp}>
+              <span className="g-hp-track" style={{ ['--hp' as string]: hpColor } as CSSProperties}>
+                <i style={{ width: `${Math.max(0, Math.min(100, (mine.hp / mine.maxHp) * 100))}%` }} />
+                {hpHit && <b key={mine.hp} className="g-hp-flash" />}
               </span>
               <span className="g-hp-num">{mine.hp}</span>
             </div>
@@ -787,6 +800,11 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
         )}
 
         <div className="g-right">
+          {carrying && mine && (
+            <span className="g-carry" role="status">
+              <FlagIcon /> CARRYING FLAG
+            </span>
+          )}
           <button className="g-icon-btn" onClick={() => (setMuted(!muted), setMutedUi(!muted))} aria-label={muted ? 'Unmute sound' : 'Mute sound'} aria-pressed={muted} title={muted ? 'Unmute' : 'Mute'}>
             <Speaker off={muted} />
           </button>

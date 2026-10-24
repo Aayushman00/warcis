@@ -531,6 +531,17 @@ export class Renderer {
       this.drawCloth(ctx, x - 6, y - R - 21, carried.team, t, 0.7)
     }
 
+    // team ring: BLUE solid, RED dashed, so team never depends on color alone
+    ctx.strokeStyle = TC[p.team].base
+    ctx.lineWidth = 1.5
+    ctx.globalAlpha = dim * 0.7
+    ctx.setLineDash(p.team === 'RED' ? [3, 3] : [])
+    ctx.beginPath()
+    ctx.arc(x, y, R + 3, 0, TAU)
+    ctx.stroke()
+    ctx.setLineDash([])
+    ctx.globalAlpha = dim
+
     // my Q: a grey ring fills while it recharges; white once the skill is ready
     if (isMe && p.alive) {
       const total = this.cooldowns[p.class] ?? 0
@@ -569,19 +580,44 @@ export class Renderer {
       ctx.closePath()
       ctx.fill()
     }
-    this.drawName(ctx, p, x, y + R + 15, isMe)
+    this.drawName(ctx, p, x, y + R + 10, isMe)
     ctx.globalAlpha = 1
   }
 
+  /** Name in a dark pill below the sprite, ellipsized to a max width, with a team shape marker (circle = BLUE, diamond = RED). */
   private drawName(ctx: CanvasRenderingContext2D, p: GPlayer, x: number, y: number, isMe: boolean) {
+    const MAX = 78
     ctx.font = `600 11px ${font.text}`
+    ctx.textAlign = 'left'
+    ctx.textBaseline = 'middle'
+    let name = p.name
+    while (name.length > 1 && ctx.measureText(name).width > MAX) name = name.slice(0, -1)
+    if (name !== p.name) name = name.trimEnd() + '…'
+    const tw = ctx.measureText(name).width
+    const w = tw + 24
+    const h = 16
+    const left = x - w / 2
+    ctx.fillStyle = alpha(color.void, 0.72)
+    ctx.beginPath()
+    ctx.roundRect(left, y, w, h, 8)
+    ctx.fill()
+    const mx = left + 9
+    const my = y + h / 2
+    ctx.fillStyle = TC[p.team].base
+    ctx.beginPath()
+    if (p.team === 'BLUE') ctx.arc(mx, my, 3, 0, TAU)
+    else {
+      ctx.moveTo(mx, my - 3.6)
+      ctx.lineTo(mx + 3.6, my)
+      ctx.lineTo(mx, my + 3.6)
+      ctx.lineTo(mx - 3.6, my)
+      ctx.closePath()
+    }
+    ctx.fill()
+    ctx.fillStyle = isMe ? '#FFFFFF' : color.ink
+    ctx.fillText(name, left + 16, my + 0.5)
     ctx.textAlign = 'center'
     ctx.textBaseline = 'alphabetic'
-    ctx.lineWidth = 3
-    ctx.strokeStyle = alpha('#000000', 0.7)
-    ctx.strokeText(p.name, x, y)
-    ctx.fillStyle = isMe ? '#FFFFFF' : color.ink
-    ctx.fillText(p.name, x, y)
   }
 
   private drawEffects(ctx: CanvasRenderingContext2D, t: number) {
@@ -656,6 +692,13 @@ function paintBackground(map: GMap): HTMLCanvasElement {
       ctx.fillRect(x + 1, y + 1, T - 2, T - 2)
     }
   }
+  // cyan grid lines between the floor plates
+  ctx.strokeStyle = alpha(color.neon, 0.07)
+  ctx.lineWidth = 1
+  ctx.beginPath()
+  for (let x = T; x < map.w; x += T) (ctx.moveTo(x, 0), ctx.lineTo(x, map.h))
+  for (let y = T; y < map.h; y += T) (ctx.moveTo(0, y), ctx.lineTo(map.w, y))
+  ctx.stroke()
   ctx.fillStyle = alpha(color.ink, 0.05)
   for (let y = T; y < map.h; y += T) for (let x = T; x < map.w; x += T) ctx.fillRect(x - 1, y - 1, 2, 2)
 
@@ -663,7 +706,7 @@ function paintBackground(map: GMap): HTMLCanvasElement {
   for (const t of ['RED', 'BLUE'] as const) {
     const left = map.bases.find((b) => b.team === t)!.x < map.w / 2
     const g = ctx.createLinearGradient(left ? 0 : map.w, 0, map.w / 2, 0)
-    g.addColorStop(0, alpha(TC[t].base, 0.1))
+    g.addColorStop(0, alpha(TC[t].base, 0.14))
     g.addColorStop(1, alpha(TC[t].base, 0))
     ctx.fillStyle = g
     ctx.fillRect(left ? 0 : map.w / 2, 0, map.w / 2, map.h)
@@ -672,7 +715,7 @@ function paintBackground(map: GMap): HTMLCanvasElement {
   // midfield: contested zone ring, hatch band along the centre line
   const cx = map.w / 2
   const cy = map.h / 2
-  ctx.strokeStyle = alpha(color.ink, 0.07)
+  ctx.strokeStyle = alpha(color.neon, 0.22)
   ctx.lineWidth = 2
   ctx.beginPath()
   ctx.arc(cx, cy, 170, 0, TAU)
@@ -741,8 +784,13 @@ function paintBackground(map: GMap): HTMLCanvasElement {
     ctx.beginPath()
     ctx.roundRect(x + 5, y + 5, w - 10, h - 10, 2)
     ctx.stroke()
-    ctx.strokeStyle = color.wallEdge
-    ctx.lineWidth = 1.2
+    ctx.strokeStyle = alpha(color.neon, 0.4) // thin cyan outline around the lit top face
+    ctx.lineWidth = 1
+    ctx.beginPath()
+    ctx.roundRect(x + 0.5, y + 0.5, w - 1, h - 1, 4)
+    ctx.stroke()
+    ctx.strokeStyle = alpha(color.neon, 0.9) // lighter cyan top edge
+    ctx.lineWidth = 1.6
     ctx.beginPath()
     ctx.moveTo(x + 4, y + 0.8)
     ctx.lineTo(x + w - 4, y + 0.8)
@@ -752,7 +800,7 @@ function paintBackground(map: GMap): HTMLCanvasElement {
   }
 
   // arena frame
-  ctx.strokeStyle = alpha(color.ink, 0.12)
+  ctx.strokeStyle = alpha(color.neon, 0.4)
   ctx.lineWidth = 2
   ctx.strokeRect(1, 1, map.w - 2, map.h - 2)
   return c

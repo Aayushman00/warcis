@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { api, setUnauthorizedHandler, token, type MMStatus, type PartyDTO, type PlayerStats, type SocialState } from './api'
+import { api, setUnauthorizedHandler, token, type HistoryItem, type HistoryPage, type MMStatus, type PartyDTO, type PlayerStats, type SocialState } from './api'
 import { Auth } from './Auth'
 import { MAX_PARTY, type Mode, type Player, type Status } from './data'
 import { FriendsPage, FriendsSidebar, Home, PartyPage, type Ctx, type Party, type View } from './Hub'
@@ -61,6 +61,7 @@ function Launcher({ me, setMe }: { me: Player; setMe: (p: Player | null) => void
   const [ping, setPing] = useState<number | null>(null)
   const [stats, setStats] = useState<Record<string, PlayerStats>>({})
   const [statsTick, setStatsTick] = useState(0)
+  const [history, setHistory] = useState<HistoryItem[]>([])
   const prev = useRef<SocialState | null>(null)
   const lastNotice = useRef<string | null>(null)
 
@@ -133,6 +134,9 @@ function Launcher({ me, setMe }: { me: Player; setMe: (p: Player | null) => void
       void api<Record<string, PlayerStats>>(`/matchmaking/stats?ids=${statsIds}`)
         .then(setStats)
         .catch(() => {}) // stats are decoration: keep showing the last good numbers
+    void api<HistoryPage>('/matchmaking/history?limit=20')
+      .then((p) => setHistory(p.items))
+      .catch(() => {}) // hub recap/streak/recent players: same story
     load()
     const i = setInterval(load, STATS_MS)
     return () => clearInterval(i)
@@ -175,6 +179,7 @@ function Launcher({ me, setMe }: { me: Player; setMe: (p: Player | null) => void
     fill,
     activity,
     stats,
+    history,
     isLeader,
     slotsUsed,
     setView,
@@ -205,6 +210,7 @@ function Launcher({ me, setMe }: { me: Player; setMe: (p: Player | null) => void
     },
     acceptRequest: (p) => act(() => api(`/social/friend-requests/${p.requestId}/accept`, { method: 'POST' })),
     declineRequest: (p) => act(() => api(`/social/friend-requests/${p.requestId}/reject`, { method: 'POST' })),
+    cancelQueue: () => act(() => api('/matchmaking/queue', { method: 'DELETE' }), 'Left matchmaking queue'),
     matchmake: () =>
       act(
         () => api('/matchmaking/queue', { method: 'POST', body: { mode, fill } }),

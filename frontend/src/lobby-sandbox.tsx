@@ -58,27 +58,36 @@ function Sandbox() {
     }))
   const startCountdown = () => patch({ status: 'COUNTDOWN', countdown_ends_at: inSecs(5), lobby_ends_at: null })
 
+  const debug = new URLSearchParams(location.search).has('debug') // toolbar only with /lobby.html?debug
   const btn = 'rounded border border-ink-600 px-3 py-1 text-sm text-ink-100 hover:bg-ink-700'
   return (
-    <div className="min-h-screen bg-ink-950 text-ink-100">
-      <div className="flex flex-wrap items-center gap-2 border-b border-ink-700 bg-ink-900 px-4 py-2">
-        <b className="font-display tracking-wider text-gold">LOBBY SANDBOX</b>
-        <button className={btn} onClick={() => setPhase('searching')}>Searching</button>
-        <button className={btn} onClick={() => setPhase('lobby')}>Lobby</button>
-        <button className={btn} onClick={botsReady}>Bots ready</button>
-        <button className={btn} onClick={startCountdown}>Countdown (5s)</button>
-        <button className={btn} onClick={() => { setMatch(fresh()); setPhase('lobby') }}>Reset</button>
-        <span className="text-xs text-ink-400">fake data · nothing is sent to the server</span>
+    <div className="flex min-h-full flex-col">
+      {/* same 64px header + 24px padding as the real app shell, so the lobby measures the same here */}
+      <header className="flex h-16 shrink-0 items-center gap-2 border-b border-white/[0.06] bg-ink-900/85 px-6">
+        {debug && (
+          <>
+            <b className="font-display tracking-wider text-gold">LOBBY SANDBOX</b>
+            <button className={btn} onClick={() => setPhase('searching')}>Searching</button>
+            <button className={btn} onClick={() => setPhase('lobby')}>Lobby</button>
+            <button className={btn} onClick={botsReady}>Bots ready</button>
+            <button className={btn} onClick={startCountdown}>Countdown (5s)</button>
+            <button className={btn} onClick={() => { setMatch(fresh()); setPhase('lobby') }}>Reset</button>
+            <button className={btn} onClick={() => patch({ lobby_ends_at: inSecs(8) })}>Timer 8s</button>
+            <span className="text-xs text-ink-300">fake data · nothing is sent to the server</span>
+          </>
+        )}
+      </header>
+      <div className="mx-auto w-full max-w-[1440px] flex-1 p-4 lg:p-6">
+        <Matchmaking
+          status={status}
+          me={ME}
+          rematch={{ canQueue: true, leaderName: null, onQueue: () => {} }}
+          onCancel={() => setPhase('lobby')}
+          onReady={() => patch({ ready: [...new Set([...match.ready, ME.id])] })}
+          onLoadout={(_, l) => setMatch((m) => ({ ...m, loadouts: { ...m.loadouts, [ME.id]: l } }))}
+          onExit={() => setMatch(fresh())}
+        />
       </div>
-      <Matchmaking
-        status={status}
-        me={ME}
-        rematch={{ canQueue: true, leaderName: null, onQueue: () => {} }}
-        onCancel={() => setPhase('lobby')}
-        onReady={() => patch({ ready: [...new Set([...match.ready, ME.id])] })}
-        onLoadout={(_, l) => setMatch((m) => ({ ...m, loadouts: { ...m.loadouts, [ME.id]: l } }))}
-        onExit={() => setMatch(fresh())}
-      />
     </div>
   )
 }

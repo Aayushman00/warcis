@@ -18,7 +18,7 @@ function Side({ title, rows, meId, tone }: { title: string; rows: ScoreRow[]; me
     <table className="w-full table-fixed text-left text-sm tabular-nums">
       <caption className={`pb-1.5 text-left font-display text-xs font-bold tracking-[0.2em] uppercase ${head}`}>{title}</caption>
       <thead>
-        <tr className="font-display text-[10px] tracking-widest text-ink-400 uppercase">
+        <tr className="font-display text-[10px] tracking-widest text-ink-300 uppercase">
           <th scope="col" className="py-1 font-semibold">
             Player
           </th>
@@ -35,7 +35,7 @@ function Side({ title, rows, meId, tone }: { title: string; rows: ScoreRow[]; me
       </thead>
       <tbody>
         {rows.map((r) => (
-          <tr key={r.id} className={`border-t border-white/[0.06] ${r.id === meId ? 'bg-gold/[0.09] font-semibold text-gold-soft' : 'text-ink-100'}`}>
+          <tr key={r.id} className={`border-t border-white/[0.06] ${r.id === meId ? 'bg-neon/[0.09] font-semibold text-neon' : 'text-ink-100'}`}>
             <td className="truncate py-1.5 pr-2">
               {r.name}
             </td>
