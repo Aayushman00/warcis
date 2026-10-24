@@ -233,7 +233,6 @@
 }
 .g-bar.is-carrying { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--tc) 55%, transparent), 0 0 28px -6px color-mix(in srgb, var(--tc) 60%, transparent); }
 .g-me { display: flex; align-items: center; gap: var(--g-s3); min-width: 0; }
-.g-emblem { width: 34px; height: 38px; flex: none; color: var(--tc); }
 .g-me-name { font-size: 15px; font-weight: 600; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .g-me-state { font-size: 12px; color: var(--g-dim); }
 .g-me-state.is-down { color: var(--g-hpLow); }

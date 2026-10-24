@@ -132,6 +132,7 @@ export class Renderer {
   private map: GMap
   private me: string
   myAim: number | null = null
+  cooldowns: Record<string, number> = {} // class id -> Q cooldown ms, from the server's hello catalog
 
   constructor(map: GMap, me: string) {
     this.map = map
@@ -530,13 +531,18 @@ export class Renderer {
       this.drawCloth(ctx, x - 6, y - R - 21, carried.team, t, 0.7)
     }
 
-    // me: crisp white outline + a small marker overhead
-    if (isMe) {
-      ctx.strokeStyle = '#FFFFFF'
+    // my Q: a grey ring fills while it recharges; white once the skill is ready
+    if (isMe && p.alive) {
+      const total = this.cooldowns[p.class] ?? 0
+      const left = Math.max(0, (p.abilityReadyAt ?? 0) - t)
+      const ready = !total || left === 0
+      ctx.strokeStyle = ready ? '#FFFFFF' : '#8A93A0'
       ctx.lineWidth = 2
+      ctx.globalAlpha = dim * (ready ? 0.95 : 0.8)
       ctx.beginPath()
-      ctx.arc(x, y, R + 3.5, 0, TAU)
+      ctx.arc(x, y, R + 6, -Math.PI / 2, -Math.PI / 2 + (ready ? 1 : 1 - Math.min(1, left / total)) * TAU)
       ctx.stroke()
+      ctx.globalAlpha = dim
     }
 
     // HP (others only; mine lives in the HUD) + name
@@ -571,30 +577,11 @@ export class Renderer {
     ctx.font = `600 11px ${font.text}`
     ctx.textAlign = 'center'
     ctx.textBaseline = 'alphabetic'
-    const tag = !p.connected ? 'OFFLINE' : p.bot ? 'BOT' : null
-    const nameW = ctx.measureText(p.name).width
-    ctx.font = `700 8px ${font.text}`
-    const tagW = tag ? ctx.measureText(tag).width + 8 : 0
-    const total = nameW + (tag ? tagW + 4 : 0)
-    const x0 = x - total / 2
-    ctx.font = `600 11px ${font.text}`
     ctx.lineWidth = 3
     ctx.strokeStyle = alpha('#000000', 0.7)
-    ctx.textAlign = 'left'
-    ctx.strokeText(p.name, x0, y)
+    ctx.strokeText(p.name, x, y)
     ctx.fillStyle = isMe ? '#FFFFFF' : color.ink
-    ctx.fillText(p.name, x0, y)
-    if (tag) {
-      const tx = x0 + nameW + 4
-      ctx.fillStyle = p.connected ? alpha(color.ink, 0.14) : alpha(color.signal, 0.2)
-      ctx.beginPath()
-      ctx.roundRect(tx, y - 9, tagW, 11, 2)
-      ctx.fill()
-      ctx.font = `700 8px ${font.text}`
-      ctx.fillStyle = p.connected ? color.dim : color.signal
-      ctx.fillText(tag, tx + 4, y - 1)
-    }
-    ctx.textAlign = 'center'
+    ctx.fillText(p.name, x, y)
   }
 
   private drawEffects(ctx: CanvasRenderingContext2D, t: number) {
@@ -669,21 +656,6 @@ function paintBackground(map: GMap): HTMLCanvasElement {
       ctx.fillRect(x + 1, y + 1, T - 2, T - 2)
     }
   }
-  // plate seams + rivet dots at corners
-  ctx.strokeStyle = alpha('#000000', 0.35)
-  ctx.lineWidth = 1
-  for (let x = 0; x <= map.w; x += T) {
-    ctx.beginPath()
-    ctx.moveTo(x + 0.5, 0)
-    ctx.lineTo(x + 0.5, map.h)
-    ctx.stroke()
-  }
-  for (let y = 0; y <= map.h; y += T) {
-    ctx.beginPath()
-    ctx.moveTo(0, y + 0.5)
-    ctx.lineTo(map.w, y + 0.5)
-    ctx.stroke()
-  }
   ctx.fillStyle = alpha(color.ink, 0.05)
   for (let y = T; y < map.h; y += T) for (let x = T; x < map.w; x += T) ctx.fillRect(x - 1, y - 1, 2, 2)
 
@@ -697,7 +669,7 @@ function paintBackground(map: GMap): HTMLCanvasElement {
     ctx.fillRect(left ? 0 : map.w / 2, 0, map.w / 2, map.h)
   }
 
-  // midfield: contested zone ring, hatch band along the centre line, corner ticks
+  // midfield: contested zone ring, hatch band along the centre line
   const cx = map.w / 2
   const cy = map.h / 2
   ctx.strokeStyle = alpha(color.ink, 0.07)
@@ -705,11 +677,6 @@ function paintBackground(map: GMap): HTMLCanvasElement {
   ctx.beginPath()
   ctx.arc(cx, cy, 170, 0, TAU)
   ctx.stroke()
-  ctx.setLineDash([2, 10])
-  ctx.beginPath()
-  ctx.arc(cx, cy, 196, 0, TAU)
-  ctx.stroke()
-  ctx.setLineDash([])
   ctx.save()
   ctx.beginPath()
   ctx.rect(cx - 6, 0, 12, map.h)
@@ -723,7 +690,7 @@ function paintBackground(map: GMap): HTMLCanvasElement {
   }
   ctx.restore()
 
-  // bases: glow, boundary, tick ring, pedestal, spawn pads
+  // bases: glow, boundary, pedestal
   for (const b of map.bases) {
     const tc = TC[b.team]
     const g = ctx.createRadialGradient(b.x, b.y, 4, b.x, b.y, b.r * 2)
@@ -737,15 +704,6 @@ function paintBackground(map: GMap): HTMLCanvasElement {
     ctx.beginPath()
     ctx.arc(b.x, b.y, b.r, 0, TAU)
     ctx.fill()
-    ctx.strokeStyle = alpha(tc.base, 0.5)
-    ctx.lineWidth = 1.5
-    for (let i = 0; i < 24; i++) {
-      const a = (i / 24) * TAU
-      ctx.beginPath()
-      ctx.moveTo(b.x + Math.cos(a) * (b.r - 10), b.y + Math.sin(a) * (b.r - 10))
-      ctx.lineTo(b.x + Math.cos(a) * (b.r - (i % 6 ? 6 : 2)), b.y + Math.sin(a) * (b.r - (i % 6 ? 6 : 2)))
-      ctx.stroke()
-    }
     // hex pedestal under the flag
     ctx.beginPath()
     for (let i = 0; i < 6; i++) {
@@ -757,24 +715,6 @@ function paintBackground(map: GMap): HTMLCanvasElement {
     ctx.fill()
     ctx.strokeStyle = alpha(tc.base, 0.8)
     ctx.lineWidth = 1.5
-    ctx.stroke()
-  }
-  for (const s of map.spawns) {
-    const tc = TC[s.team]
-    const dir = s.x < map.w / 2 ? 1 : -1 // arrow points toward midfield
-    ctx.fillStyle = alpha(tc.base, 0.07)
-    ctx.strokeStyle = alpha(tc.base, 0.35)
-    ctx.lineWidth = 1
-    ctx.beginPath()
-    ctx.roundRect(s.x - 16, s.y - 16, 32, 32, 5)
-    ctx.fill()
-    ctx.stroke()
-    ctx.strokeStyle = alpha(tc.base, 0.5)
-    ctx.lineWidth = 2
-    ctx.beginPath()
-    ctx.moveTo(s.x - 4 * dir, s.y - 6)
-    ctx.lineTo(s.x + 3 * dir, s.y)
-    ctx.lineTo(s.x - 4 * dir, s.y + 6)
     ctx.stroke()
   }
 

@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { token, type ClassId, type DecidedBy, type MatchDTO, type WeaponId } from './api'
 import type { Player } from './data'
-import { CLASS_INFO, WEAPON_INFO } from './game/classes'
 import './game/hud.css'
 import { Renderer, Timeline, type GMap, type Snapshot } from './game/render'
 import { isMuted, setMuted, sfx, unlockAudio } from './game/sfx'
 import { color, cssVars, other, type Team } from './game/tokens'
+import { ClassAvatar } from './Loadout'
 import { Scoreboard, type ScoreRow } from './Scoreboard'
 
 /* In-match client. The server (services/game-service) is authoritative: this component
@@ -174,15 +174,6 @@ const Speaker = ({ off }: { off: boolean }) => (
     {off ? <path d="M13.5 7.5l5 5m0-5l-5 5" /> : <path d="M13.5 7a4 4 0 0 1 0 6M15.8 4.8a7 7 0 0 1 0 10.4" />}
   </svg>
 )
-const Emblem = ({ letter }: { letter: string }) => (
-  <svg className="g-emblem" viewBox="0 0 34 38" aria-hidden>
-    <path d="M17 1 32 7v11c0 9-6.5 15.5-15 19C8.5 33.5 2 27 2 18V7z" fill="currentColor" opacity="0.18" />
-    <path d="M17 1 32 7v11c0 9-6.5 15.5-15 19C8.5 33.5 2 27 2 18V7z" fill="none" stroke="currentColor" strokeWidth="1.6" />
-    <text x="17" y="24" textAnchor="middle" fill="currentColor" style={{ font: `700 15px var(--g-font-display)` }}>
-      {letter}
-    </text>
-  </svg>
-)
 
 /* Blue (always my team in this view) above red. Rank = position by the server's rating
    (2*captures + K/D) across both teams; rows within a team are in rank order. */
@@ -238,9 +229,6 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
   const respawnEl = useRef<HTMLSpanElement>(null)
   const resumeEl = useRef<HTMLElement>(null)
   const ringEl = useRef<SVGCircleElement>(null)
-  const qEl = useRef<HTMLDivElement>(null)
-  const qTime = useRef<HTMLSpanElement>(null)
-  const catalogRef = useRef<Catalog | null>(null)
   const tl = useRef(new Timeline())
   const rend = useRef<Renderer | null>(null)
   const [map, setMap] = useState<GMap | null>(null)
@@ -291,7 +279,7 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
       introPlayed = true
       ;([3, 2, 1] as const).forEach((n, i) => later(i * 480, () => (setIntro(n), sfx.countdown(false))))
       later(1440, () => (setIntro('go'), sfx.countdown(true)))
-      later(2540, () => setIntro(null))
+      later(2540, () => (setIntro(null), setBanner({ id: ++seq, title: 'STEAL THE ENEMY FLAG', sub: 'Bring it back to your base', team: 'BLUE' })))
     }
 
     /** Turn the difference between two authoritative snapshots into feedback, timed to render time. */
@@ -392,8 +380,8 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
           tl.current.reset() // fresh timeline after a reconnect: no sliding from stale positions
           const vm = viewMap(m.map, view)
           dims = vm
-          catalogRef.current = m.catalog
           rend.current ??= new Renderer(vm, me.id)
+          for (const [id, c] of Object.entries(m.catalog.classes)) rend.current.cooldowns[id] = c.cooldownMs
           setMap((old) => old ?? vm)
           setConn('live')
           sendInput()
@@ -518,15 +506,6 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
       if (clockEl.current) clockEl.current.textContent = clock((s.suddenDeath ? s.hardStopMs : s.matchMs) - elapsed)
       if (s.resumesAt && resumeEl.current) resumeEl.current.textContent = String(Math.max(1, Math.ceil((s.resumesAt - t) / 1000)))
       const mine = s.players.find((p) => p.id === me.id)
-      if (mine && qEl.current) {
-        // Q cooldown ring + countdown, straight from the server's abilityReadyAt (no React re-render per frame).
-        const total = catalogRef.current?.classes[mine.class]?.cooldownMs ?? 1
-        const left = Math.max(0, (mine.abilityReadyAt ?? 0) - s.now)
-        qEl.current.style.setProperty('--cd', String(Math.min(1, left / total)))
-        qEl.current.classList.toggle('is-ready', left === 0 && mine.alive)
-        qEl.current.classList.toggle('is-active', mine.invisible || mine.dashing || s.barriers.some((b) => b.owner === mine.id))
-        if (qTime.current) qTime.current.textContent = left > 0 ? (left / 1000).toFixed(left < 10_000 ? 1 : 0) : ''
-      }
       if (mine?.respawnAt) {
         const left = Math.max(0, mine.respawnAt - t)
         if (respawnEl.current) respawnEl.current.textContent = (left / 1000).toFixed(1)
@@ -581,7 +560,7 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
     if (own.state === 'DROPPED') return { text: 'Recover your flag', team: mine.team, icon: <Alert /> }
     if (theirs.state === 'CARRIED') return { text: `Escort ${theirs.carrier?.name ?? 'your carrier'} home`, team: mine.team, icon: <FlagIcon /> }
     if (secured) return { text: 'Flag secured', team: null, icon: <FlagIcon /> }
-    return { text: 'Steal the enemy flag', team: null, icon: <FlagIcon /> }
+    return null
   })()
 
   const wing = (t: Team) => {
@@ -593,17 +572,15 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
         <div className="g-wing-id">
           <span className="g-team-name">
             {t}
-            <small>{alive} alive</small>
           </span>
           <span className="g-pips" aria-label={`${alive} of ${hud?.roster[t].length ?? 0} ${t.toLowerCase()} players alive`}>
             {(hud?.roster[t] ?? []).map((p) => (
               <i key={p.id} className={`g-pip ${p.alive ? '' : 'is-down'} ${p.connected ? '' : 'is-offline'}`} />
             ))}
           </span>
-          {f && (
+          {f && f.state !== 'AT_BASE' && (
             <span className={`g-flagtab ${f.state === 'CARRIED' ? 'is-taken' : f.state === 'DROPPED' ? 'is-dropped' : ''}`}>
               <FlagIcon />
-              {f.state === 'AT_BASE' && 'Flag home'}
               {f.state === 'CARRIED' && (
                 <>
                   {!hud?.ended && <span className="g-live-dot" />}
@@ -680,7 +657,6 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
                 {intro === 'go' ? (
                   <div className="g-go">
                     <span className="g-go-title">CAPTURE THE FLAG</span>
-                    <span className="g-go-sub">Steal the enemy flag and bring it to your base</span>
                   </div>
                 ) : (
                   <span key={intro} className="g-count">
@@ -784,12 +760,10 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
 
       <footer className={`g-bar ${carrying && mine ? `is-carrying ${tc(other(mine.team))}` : ''}`}>
         <div className={`g-me ${myTeam ? tc(myTeam) : ''}`}>
-          {mine && <Emblem letter={mine.name[0]?.toUpperCase() ?? '?'} />}
+          {mine && <ClassAvatar cls={mine.cls} size={44} />}
           <div style={{ minWidth: 0 }}>
             <div className="g-me-name">{mine?.name ?? me.name}</div>
-            <div className={`g-me-state ${mine && !mine.alive ? 'is-down' : ''}`}>
-              {mine ? (mine.alive ? `${cap(mine.team)} team · ${CLASS_INFO[mine.cls].name} · ${WEAPON_INFO[mine.weapon].name}` : 'Eliminated') : 'Spectating'}
-            </div>
+            {!mine?.alive && <div className={`g-me-state ${mine ? 'is-down' : ''}`}>{mine ? 'Eliminated' : 'Spectating'}</div>}
           </div>
           {mine && (
             <div className="g-hp" aria-label={`Health ${mine.hp}`}>
@@ -813,20 +787,6 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
         )}
 
         <div className="g-right">
-          {mine && (
-            <div ref={qEl} className="g-q" title={CLASS_INFO[mine.cls].q} aria-label={`${CLASS_INFO[mine.cls].qName}: press Q`}>
-              <span className="g-q-key">Q</span>
-              <span className="g-q-name">{CLASS_INFO[mine.cls].qName}</span>
-              <span ref={qTime} className="g-q-time" />
-            </div>
-          )}
-          {carrying && mine && (
-            <span className={`g-carry ${tc(other(mine.team))}`}>
-              <FlagIcon />
-              {other(mine.team)} FLAG
-            </span>
-          )}
-          {!hud?.ended && <span className="g-hint">Hold TAB for stats</span>}
           <button className="g-icon-btn" onClick={() => (setMuted(!muted), setMutedUi(!muted))} aria-label={muted ? 'Unmute sound' : 'Mute sound'} aria-pressed={muted} title={muted ? 'Unmute' : 'Mute'}>
             <Speaker off={muted} />
           </button>
