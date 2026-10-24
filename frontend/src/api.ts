@@ -91,6 +91,8 @@ export type QPlayer = { id: string; name: string; tag: string }
 export type TeamName = 'RED' | 'BLUE'
 export type ClassId = 'ASSAULTER' | 'GUARDIAN' | 'ASSASSIN'
 export type WeaponId = 'ASSAULT_RIFLE' | 'SHOTGUN' | 'SNIPER_RIFLE'
+/** How a match ended: first to 3, higher score at 10:00, a sudden-death capture, or the 12:00 tiebreak (objective, kills, draw). */
+export type DecidedBy = 'ROUNDS' | 'SCORE' | 'SUDDEN_DEATH' | 'OBJECTIVE' | 'KILLS' | 'DRAW'
 /** What a player takes into the match; chosen in the match lobby, stored and enforced by the server. */
 export interface Loadout {
   class: ClassId
@@ -109,7 +111,9 @@ export interface PlayerResult {
   weapon?: WeaponId
 }
 export interface MatchResult {
-  winner: TeamName | 'TIE'
+  winner: TeamName | 'TIE' // TIE = a draw
+  decided_by?: DecidedBy | null // absent on matches played before sudden death existed
+  progress?: Record<TeamName, number> // furthest flag carry in the last round, % of the way home
   scores?: Record<TeamName, number> // absent on matches played before rounds existed
   capturer: string | null
   duration_ms: number

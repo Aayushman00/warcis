@@ -17,8 +17,10 @@ Assassin's coordinates are never sent to the enemy team.
 Persistence: the simulation lives in RAM. Every CHECKPOINT_MS a small snapshot goes to
 MongoDB `game_checkpoints` (one doc per match). On startup, recent PLAYING checkpoints of
 IN_PROGRESS matches are restored and players reconnect into them. A capture scores a
-round; first to 3, or the higher score at 10:00 (equal = TIE), ends the match. The server
-writes `result` (winner, scores, per-player kills / deaths / captures) onto the match and logs
+round; first to 3, or the higher score at 10:00, ends the match. Level at 10:00 is sudden death
+(no respawns, next capture wins); still level at 12:00, objective progress, then kills, decide,
+else it is a draw (stored as winner TIE). The server
+writes `result` (winner, scores, how it was decided, per-player kills / deaths / captures) onto the match and logs
 MATCH_ENDED and one PLAYER_RESULT per player; the match itself is still closed by
 matchmaking's existing /leave flow ("Return to hub").
 """
@@ -120,7 +122,7 @@ async def open_room(match_id: str, user_id: str) -> Room:
             raise ApiError(404, "MATCH_NOT_FOUND", "Match not found.")
         if m.get("result"):
             w = m["result"]["winner"]
-            raise ApiError(409, "MATCH_ENDED", "TIE" if w == "TIE" else f"{w} TEAM WINS")
+            raise ApiError(409, "MATCH_ENDED", "DRAW" if w == "TIE" else f"{w} TEAM WINS")
         if m["status"] != "IN_PROGRESS":
             raise ApiError(409, "MATCH_NOT_STARTED", "Match is not in progress.")
         cp = await checkpoints.find_one({"match_id": match_id})
@@ -214,7 +216,7 @@ async def _record_result(room: Room) -> None:
                 at = result["at"]
                 await events.insert_many(
                     [{"match_id": room.match_id, "type": "MATCH_ENDED", "user_id": g.capturer, "at": at,
-                      "data": {"winner": result["winner"], "duration_ms": result["duration_ms"]}}]
+                      "data": {"winner": result["winner"], "decided_by": result["decided_by"], "duration_ms": result["duration_ms"]}}]
                     + [{"match_id": room.match_id, "type": "PLAYER_RESULT", "user_id": p["id"], "at": at,
                         "data": {k: p[k] for k in ("team", "class", "weapon", "outcome", "kills", "deaths", "captures")}}
                        for p in result["players"]]

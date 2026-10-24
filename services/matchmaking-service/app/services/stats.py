@@ -26,7 +26,8 @@ def _shape(row: dict | None) -> dict:
 async def player_stats(user_ids: list[str]) -> dict[str, dict]:
     """Career totals for each id (zeros for players who never finished a match).
 
-    Only matches with a recorded `result` count: cancelled or abandoned matches have none.
+    Only matches with a recorded `result` count: cancelled or abandoned matches have none. A draw
+    (winner TIE) is not a win, a loss or a counted match; its kills, deaths and captures still count.
     """
     ids = list(dict.fromkeys(user_ids))[:MAX_STATS_IDS]
     cursor = await matches.aggregate(
@@ -37,7 +38,7 @@ async def player_stats(user_ids: list[str]) -> dict[str, dict]:
             {
                 "$group": {
                     "_id": "$result.players.id",
-                    "matches": {"$sum": 1},
+                    "matches": {"$sum": {"$cond": [{"$eq": ["$result.winner", "TIE"]}, 0, 1]}},
                     "wins": {"$sum": {"$cond": [{"$eq": ["$result.players.team", "$result.winner"]}, 1, 0]}},
                     "kills": {"$sum": "$result.players.kills"},
                     "deaths": {"$sum": "$result.players.deaths"},
@@ -57,6 +58,7 @@ def result_view(m: dict) -> dict | None:
     return {
         "winner": r["winner"],
         "capturer": r.get("capturer"),
+        "decided_by": r.get("decided_by"),  # absent on matches played before sudden death existed
         "duration_ms": r.get("duration_ms", 0),
         "ended_at": r["at"].isoformat() if r.get("at") else None,
         "players": r["players"],

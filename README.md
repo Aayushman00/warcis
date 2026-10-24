@@ -154,6 +154,12 @@ cd services/matchmaking-service && python -m app.services.stats     # → stats 
 - Server decides movement, wall collision, projectiles (swept along their whole path each tick, so fast rounds
   never tunnel a wall or a barrier), damage, death, 3 s respawn, flag pickup / drop on death / return by own
   team / auto-return after 10 s, and capture.
+- **Winning:** a capture scores a round (4 s frozen reset between rounds); first to 3 wins, or the higher score
+  at 10:00. Level at 10:00 is **sudden death**: respawns stop (whoever is down stays down) and the next capture
+  wins. Still level at 12:00, the match is finalized: the team that carried the enemy flag furthest toward home
+  this round wins (*objective progress*; a pickup counts as 1 %), then the team with more kills, else it is a
+  **draw**. The result records how it was decided (`decided_by`); a draw (stored as winner `TIE`) is left out
+  of career wins, losses, matches and win rate.
 
 ### Match lobby, classes and weapons
 
@@ -195,7 +201,7 @@ reconnect; allies and the Assassin see it as a faint shimmer. Hidden players can
   with WebAudio.
 - **Bots** (`scripts/bots.py` + `scripts/bot_ai.py`) enter the match and play over the same WebSocket
   protocol, at ~10 Hz. They chase an enemy carrier, recover a dropped flag, attack or defend (one bot per
-  team guards the base), fight what they can see (reaction delay + aim noise; pace and range follow their weapon), use Q (dash to escape with the flag, barrier against an incoming enemy, cloak on the way to the flag), otherwise patrol. In the lobby they pick a random class and weapon. They use
+  team guards the base), fight what they can see (reaction delay + aim noise; pace and range follow their weapon), use Q (dash to escape with the flag, barrier against an incoming enemy, cloak on the way to the flag, to ambush a carrier or an attacker, or to escape when hurt), otherwise patrol. In the lobby they pick a random class and weapon. They use
   grid BFS around walls and get no extra stats. A player with no live socket keeps their state and is shown "OFFLINE".
 - **Recovery:** every 3 s (and on clean shutdown) a small checkpoint goes to MongoDB `game_checkpoints`
   (players with class, weapon and cooldowns, flags, barriers, timers, winner). On startup the service restores PLAYING checkpoints newer than 10 min
