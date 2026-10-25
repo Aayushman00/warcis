@@ -885,14 +885,6 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
       </footer>
 
       {touch && !hud?.ended && !fatal && <TouchControls api={touchApi} skillRef={skillEl} skillName={abilities[mine?.cls ?? ''] ?? 'Skill'} />}
-      <div className="g-rotate" role="alert">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-          <rect x="7" y="2.5" width="10" height="19" rx="2" transform="rotate(90 12 12)" />
-          <path d="M3 8a9 9 0 0 1 4-4M21 16a9 9 0 0 1-4 4M7 4H4V1M17 20h3v3" />
-        </svg>
-        <b>Rotate your phone</b>
-        <span>WARCIS is played in landscape</span>
-      </div>
     </div>
   )
 }

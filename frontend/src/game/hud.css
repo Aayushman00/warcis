@@ -5,6 +5,8 @@
   --g-top-h: 96px;
   --g-bottom-h: 76px; /* bar (~54) + its top margin + bottom breathing room */
   --g-stage-pad: var(--g-s4);
+  --g-safe-l: max(8px, env(safe-area-inset-left));
+  --g-safe-r: max(8px, env(safe-area-inset-right));
   /* The map is the largest 12:7 box that fits between the plate and the bar. */
   --g-map-w: min(calc(100vw - 2 * var(--g-s4)), calc((100dvh - var(--g-top-h) - var(--g-bottom-h) - var(--g-stage-pad) - var(--g-s2)) * 12 / 7));
   position: fixed;
@@ -268,7 +270,7 @@
 .g-q.is-ready .g-q-key { background: var(--g-ink); }
 .g-q.is-active { color: var(--g-ink); box-shadow: inset 0 0 0 1px var(--g-hpHigh); }
 .g-q.is-active .g-q-key { background: var(--g-hpHigh); }
-.g-ping { position: absolute; top: var(--g-s4); right: var(--g-s5); padding: 4px 8px; border-radius: var(--g-r-chip); background: color-mix(in srgb, var(--g-deck) 80%, transparent); z-index: 1; min-width: 52px; text-align: right; font-family: var(--g-font-display); font-weight: 600; font-size: 15px; letter-spacing: 0.04em; font-variant-numeric: tabular-nums; }
+.g-ping { position: absolute; top: calc(var(--g-top-h) - 22px); right: var(--g-s2); padding: 4px 8px; border-radius: var(--g-r-chip); background: color-mix(in srgb, var(--g-deck) 80%, transparent); z-index: 1; min-width: 52px; text-align: right; font-family: var(--g-font-display); font-weight: 600; font-size: 15px; letter-spacing: 0.04em; font-variant-numeric: tabular-nums; }
 
 /* ─────────────── controls ─────────────── */
 
@@ -382,72 +384,77 @@
 
 /* ─────────────── touch (phones, landscape) ───────────────
    The map takes the full height; the HUD shrinks to a slim score plate on top, an HP chip at the bottom
-   centre and the sticks float over the side margins. Portrait gets a "rotate" cover instead. */
+   centre and the sticks float over the side margins. */
 
-.g-rotate { display: none; }
 .g-root.is-touch {
-  --g-top-h: 38px;
-  --g-bottom-h: 0px;
-  --g-stage-pad: 4px;
-  --g-safe-l: max(8px, env(safe-area-inset-left));
-  --g-safe-r: max(8px, env(safe-area-inset-right));
-  --g-map-w: min(calc(100vw - var(--g-safe-l) - var(--g-safe-r)), calc((100dvh - var(--g-top-h) - var(--g-stage-pad) - 4px) * 12 / 7));
   touch-action: none;
   overscroll-behavior: none;
   -webkit-touch-callout: none;
   -webkit-tap-highlight-color: transparent;
 }
-.is-touch .g-plate { padding-bottom: 4px; }
-.is-touch .g-wing { gap: 6px; padding: 2px 10px; }
-.is-touch .g-wing-id { flex-direction: row; align-items: center; gap: 8px; }
-.is-touch .g-team-name { font-size: 15px; }
-.is-touch .g-pip { width: 9px; height: 4px; }
-.is-touch .g-score { font-size: 26px; }
-.is-touch .g-alive, .is-touch .g-flagtab, .is-touch .g-carry { display: none; }
-.is-touch .g-clock { min-width: 84px; padding: 0 10px; font-size: 21px; }
-.is-touch .g-round-tag { margin-top: -3px; padding-bottom: 2px; font-size: 8px; letter-spacing: 0.1em; }
-.is-touch .g-ping { top: 7px; left: var(--g-safe-l); right: auto; min-width: 0; padding: 2px 6px; font-size: 12px; text-align: left; }
-.is-touch .g-feed { top: 6px; right: 6px; }
-.is-touch .g-feed-row { padding: 2px 6px; font-size: 11px; }
-.is-touch .g-banner { top: 10%; }
-.is-touch .g-banner-title { font-size: 26px; }
-.is-touch .g-banner-title::before, .is-touch .g-banner-title::after { width: 28px; }
-.is-touch .g-banner-sub { font-size: 12px; }
-.is-touch .g-count { font-size: 84px; }
-.is-touch .g-go-title { font-size: 34px; }
-.is-touch .g-death-title { font-size: 30px; }
-.is-touch .g-ring { width: 68px; height: 68px; margin-top: 0; }
-.is-touch .g-ring span { font-size: 26px; }
-.is-touch .g-round-title { font-size: 40px; }
-.is-touch .g-round-sub { font-size: 13px; }
 
-/* HP chip, objective and the button cluster leave the grid so they never take map height */
-.is-touch .g-bar { position: fixed; z-index: 4; left: 0; right: 0; bottom: max(6px, env(safe-area-inset-bottom)); width: auto; margin: 0; padding: 0; display: flex; justify-content: center; background: none; box-shadow: none; pointer-events: none; }
-.is-touch .g-me { gap: 8px; padding: 3px 12px 3px 4px; background: color-mix(in srgb, var(--g-deck) 82%, transparent); border-radius: 999px; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--g-neon) 35%, transparent); }
-.is-touch .g-bar.is-carrying .g-me { box-shadow: inset 0 0 0 1px var(--tc), 0 0 14px -2px var(--tc); }
-.is-touch .g-me-name { display: none; }
-.is-touch .g-me-state { display: block; }
-.is-touch .g-hp { margin: 0; }
-.is-touch .g-hp-track { width: 104px; height: 8px; }
-.is-touch .g-hp-num { min-width: 26px; font-size: 19px; }
-.is-touch .g-objective { position: fixed; top: calc(var(--g-top-h) + 6px); left: 0; right: 0; width: max-content; max-width: 56vw; margin-inline: auto; padding: 2px 10px; font-size: 11px; white-space: normal; text-align: center; background: color-mix(in srgb, var(--g-void) 70%, transparent); border-radius: 999px; }
-.is-touch .g-objective svg { width: 12px; height: 12px; flex: none; }
-.is-touch .g-right { position: fixed; top: 3px; right: var(--g-safe-r); gap: 6px; pointer-events: auto; }
-.is-touch .g-icon-btn { width: 32px; height: 32px; background: color-mix(in srgb, var(--g-deck) 80%, transparent); }
-.is-touch .g-icon-btn svg { width: 17px; height: 17px; }
+/* compact HUD: phones only (short landscape or narrow portrait). Tablets keep the full desktop HUD with the sticks on top. */
+@media (max-height: 560px), (max-width: 560px) {
+  .g-root.is-touch {
+    --g-top-h: 38px;
+    --g-bottom-h: 0px;
+    --g-stage-pad: 4px;
+    --g-safe-l: max(8px, env(safe-area-inset-left));
+    --g-safe-r: max(8px, env(safe-area-inset-right));
+    --g-map-w: min(calc(100vw - var(--g-safe-l) - var(--g-safe-r)), calc((100dvh - var(--g-top-h) - var(--g-stage-pad) - 4px) * 12 / 7));
+  }
+  .is-touch .g-plate { padding-bottom: 4px; }
+  .is-touch .g-wing { gap: 6px; padding: 2px 10px; }
+  .is-touch .g-wing-id { flex-direction: row; align-items: center; gap: 8px; }
+  .is-touch .g-team-name { font-size: 15px; }
+  .is-touch .g-pip { width: 9px; height: 4px; }
+  .is-touch .g-score { font-size: 26px; }
+  .is-touch .g-alive, .is-touch .g-flagtab, .is-touch .g-carry { display: none; }
+  .is-touch .g-clock { min-width: 84px; padding: 0 10px; font-size: 21px; }
+  .is-touch .g-round-tag { margin-top: -3px; padding-bottom: 2px; font-size: 8px; letter-spacing: 0.1em; }
+  .is-touch .g-ping { top: 7px; left: var(--g-safe-l); right: auto; min-width: 0; padding: 2px 6px; font-size: 12px; text-align: left; }
+  .is-touch .g-feed { top: 6px; right: 6px; }
+  .is-touch .g-feed-row { padding: 2px 6px; font-size: 11px; }
+  .is-touch .g-banner { top: 10%; }
+  .is-touch .g-banner-title { font-size: 26px; }
+  .is-touch .g-banner-title::before, .is-touch .g-banner-title::after { width: 28px; }
+  .is-touch .g-banner-sub { font-size: 12px; }
+  .is-touch .g-count { font-size: 84px; }
+  .is-touch .g-go-title { font-size: 34px; }
+  .is-touch .g-death-title { font-size: 30px; }
+  .is-touch .g-ring { width: 68px; height: 68px; margin-top: 0; }
+  .is-touch .g-ring span { font-size: 26px; }
+  .is-touch .g-round-title { font-size: 40px; }
+  .is-touch .g-round-sub { font-size: 13px; }
 
-/* end screens fit a 360px-high viewport */
-.is-touch .g-result-band { gap: 4px; padding: 8px 12px; }
-.is-touch .g-result-band.has-board { padding-block: 8px; }
-.is-touch .g-result-kicker { font-size: 12px; }
-.is-touch .g-result-title, .is-touch .g-result-band.has-board .g-result-title { font-size: 38px; }
-.is-touch .g-result-score { gap: 10px; font-size: 24px; }
-.is-touch .g-result-score em { font-size: 13px; }
-.is-touch .g-result-by { font-size: 11px; text-align: center; }
-.is-touch .g-result-board { max-height: 28vh; margin-block: 2px; }
-.is-touch .g-result-actions { margin-top: 4px; gap: 8px; }
-.is-touch .g-btn { padding: 8px 22px; font-size: 15px; }
-.is-touch .g-boardlayer { pointer-events: auto; }
+  /* HP chip, objective and the button cluster leave the grid so they never take map height */
+  .is-touch .g-bar { position: fixed; z-index: 4; left: 0; right: 0; bottom: max(6px, env(safe-area-inset-bottom)); width: auto; margin: 0; padding: 0; display: flex; justify-content: center; background: none; box-shadow: none; pointer-events: none; }
+  .is-touch .g-me { gap: 8px; padding: 3px 12px 3px 4px; background: color-mix(in srgb, var(--g-deck) 82%, transparent); border-radius: 999px; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--g-neon) 35%, transparent); }
+  .is-touch .g-bar.is-carrying .g-me { box-shadow: inset 0 0 0 1px var(--tc), 0 0 14px -2px var(--tc); }
+  .is-touch .g-me-name { display: none; }
+  .is-touch .g-me-state { display: block; }
+  .is-touch .g-hp { margin: 0; }
+  .is-touch .g-hp-track { width: 104px; height: 8px; }
+  .is-touch .g-hp-num { min-width: 26px; font-size: 19px; }
+  .is-touch .g-objective { position: fixed; top: calc(var(--g-top-h) + 6px); left: 0; right: 0; width: max-content; max-width: 56vw; margin-inline: auto; padding: 2px 10px; font-size: 11px; white-space: normal; text-align: center; background: color-mix(in srgb, var(--g-void) 70%, transparent); border-radius: 999px; }
+  .is-touch .g-objective svg { width: 12px; height: 12px; flex: none; }
+  .is-touch .g-right { position: fixed; top: 3px; right: var(--g-safe-r); gap: 6px; pointer-events: auto; }
+  .is-touch .g-icon-btn { width: 32px; height: 32px; background: color-mix(in srgb, var(--g-deck) 80%, transparent); }
+  .is-touch .g-icon-btn svg { width: 17px; height: 17px; }
+
+  /* end screens fit a 360px-high viewport */
+  .is-touch .g-result-band { gap: 4px; padding: 8px 12px; }
+  .is-touch .g-result-band.has-board { padding-block: 8px; }
+  .is-touch .g-result-kicker { font-size: 12px; }
+  .is-touch .g-result-title, .is-touch .g-result-band.has-board .g-result-title { font-size: 38px; }
+  .is-touch .g-result-score { gap: 10px; font-size: 24px; }
+  .is-touch .g-result-score em { font-size: 13px; }
+  .is-touch .g-result-by { font-size: 11px; text-align: center; }
+  .is-touch .g-result-board { max-height: 28vh; margin-block: 2px; }
+  .is-touch .g-result-actions { margin-top: 4px; gap: 8px; }
+  .is-touch .g-btn { padding: 8px 22px; font-size: 15px; }
+  .is-touch .g-boardlayer { pointer-events: auto; }
+}
 
 /* sticks + skill */
 .g-touch { position: fixed; inset: 0; z-index: 5; pointer-events: none; touch-action: none; }
@@ -466,10 +473,15 @@
 .g-skill:active span { transform: scale(0.92); }
 .g-skill:disabled { opacity: 0.35; }
 
-@media (orientation: portrait) {
-  .g-root.is-touch .g-rotate { position: fixed; inset: 0; z-index: 100; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; background: var(--g-void); text-align: center; }
-  .g-rotate svg { width: 72px; height: 72px; color: var(--g-neon); animation: g-tilt 2.4s ease-in-out infinite; }
-  .g-rotate b { font-family: var(--g-font-display); font-size: 28px; letter-spacing: 0.08em; text-transform: uppercase; }
-  .g-rotate span { font-size: 14px; color: var(--g-dim); }
+/* phone in portrait: the map letterboxes by width, so buttons drop below the score plate */
+@media (orientation: portrait) and (max-width: 560px) {
+  .is-touch .g-right { top: calc(var(--g-top-h) + 6px); }
+  .is-touch .g-objective { top: calc(var(--g-top-h) + 50px); max-width: 90vw; }
+  .is-touch .g-skill { bottom: 190px; }
 }
-@keyframes g-tilt { 0%, 15% { transform: rotate(0); } 50%, 65% { transform: rotate(-90deg); } 100% { transform: rotate(0); } }
+
+/* tablets: lift the sticks and skill over the desktop footer bar */
+@media (min-height: 561px) and (min-width: 561px) {
+  .g-zone.is-l .g-stick, .g-zone.is-r .g-stick { top: calc(100% - var(--g-bottom-h) - 70px); }
+  .g-skill { bottom: calc(var(--g-bottom-h) + 150px); }
+}

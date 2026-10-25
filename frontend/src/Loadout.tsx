@@ -68,7 +68,7 @@ function HeroStage({ cls, weapon, locked, children }: { cls: ClassId | undefined
     drawAvatar(ctx, cls, pal, BASE_R, 1, 0)
   })
   return (
-    <div className="relative min-h-[470px] flex-1 sm:min-h-[360px] lg:min-h-[240px] overflow-hidden rounded-[10px] border border-neon/25 bg-ink-850 lg:col-start-2 lg:row-start-1">
+    <div className="relative min-h-[470px] flex-1 sm:min-h-[360px] wide:min-h-[240px] overflow-hidden rounded-[10px] border border-neon/25 bg-ink-850 wide:col-start-2 wide:row-start-1">
       <div aria-hidden className="pointer-events-none absolute inset-0 animate-breathe bg-[radial-gradient(circle_at_50%_46%,color-mix(in_srgb,var(--color-ally)_30%,transparent),color-mix(in_srgb,var(--color-ally)_8%,transparent)_38%,transparent_62%)]" />
       <canvas
         ref={ref}
@@ -312,13 +312,6 @@ export function Armory({
             {!hinted && !locked && <p className="mt-1 text-[11px] text-ink-300">Press 1–3 to pick a class, 4–6 for a weapon</p>}
           </div>
         </div>
-        {locked && (
-          <div className="pointer-events-none absolute top-20 right-4">
-            <span className="animate-rise -rotate-6 rounded-md border-2 border-gold bg-ink-950/40 px-3 py-1 font-display text-xl font-bold tracking-[0.3em] text-gold uppercase">
-              Locked in
-            </span>
-          </div>
-        )}
         <div className="pointer-events-none absolute inset-x-0 bottom-0 grid grid-cols-1 items-stretch sm:grid-cols-[1fr_auto] gap-4 bg-gradient-to-t from-ink-950/95 via-ink-950/70 to-transparent p-4 pt-6">
           <div className="grid gap-1">
             <StatBar label="Health" value={c?.health ?? 0} from="Class" diff={dHealth} />
@@ -341,7 +334,7 @@ export function Armory({
         </div>
       </HeroStage>
 
-      <div className="grid gap-3 sm:grid-cols-[1fr_auto_1fr] lg:col-span-3 lg:row-start-2" role="group" aria-label="Choose your class and weapon">
+      <div className="grid gap-3 sm:grid-cols-[1fr_auto_1fr] wide:col-span-3 wide:row-start-2" role="group" aria-label="Choose your class and weapon">
         <section className="flex flex-col">
           <div className="mb-2 flex items-baseline justify-between">
             <p className="label !text-ink-100">Class</p>

@@ -316,17 +316,12 @@ function CountUp({ to }: { to: number }) {
   return <>{v}</>
 }
 
-// ponytail: deltas are placeholder text until the backend tracks weekly change
-function StatTile({ label, value, suffix = '', delta, up = true, tone = '' }: { label: string; value: number | null; suffix?: string; delta: string; up?: boolean; tone?: string }) {
+function StatTile({ label, value, suffix = '', tone = '' }: { label: string; value: number | null; suffix?: string; tone?: string }) {
   return (
     <div className="panel-quiet px-4 py-3">
       <p className="label">{label}</p>
       <p className={`mt-1 font-display text-3xl font-bold tabular-nums ${tone}`}>
         {value == null ? '–' : <><CountUp to={value} />{suffix}</>}
-      </p>
-      <p className={`mt-0.5 flex items-center gap-1 text-xs font-semibold tabular-nums ${up ? 'text-online' : 'text-foe'}`}>
-        <svg viewBox="0 0 10 10" className="size-2.5" aria-hidden><path d={up ? 'M5 1l4 7H1z' : 'M5 9L1 2h8z'} fill="currentColor" /></svg>
-        {delta}
       </p>
     </div>
   )
@@ -338,10 +333,10 @@ function StatsStrip({ stats, history }: Pick<Ctx, 'history'> & { stats?: PlayerS
   const none = !stats?.matches
   return (
     <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-      <StatTile label="Matches" value={stats?.matches ?? null} delta="+3 this week" />
-      <StatTile label="Win rate" value={none || stats.win_rate == null ? null : Math.round(stats.win_rate * 100)} suffix="%" delta="+2% this week" />
-      <StatTile label="Flag captures" value={stats?.captures ?? null} delta="+4 this week" />
-      <StatTile label="Win streak" value={wins} delta={wins > 1 ? 'On a roll' : '−1 vs last'} up={wins > 1} tone={wins > 1 ? 'text-online' : ''} />
+      <StatTile label="Matches" value={stats?.matches ?? null} />
+      <StatTile label="Win rate" value={none || stats.win_rate == null ? null : Math.round(stats.win_rate * 100)} suffix="%" />
+      <StatTile label="Flag captures" value={stats?.captures ?? null} />
+      <StatTile label="Win streak" value={wins} tone={wins > 1 ? 'text-online' : ''} />
     </div>
   )
 }
@@ -368,21 +363,6 @@ function LastMatch({ m }: { m?: HistoryItem }) {
       <p className="mt-1 text-sm text-ink-300">
         {m.me.kills} kills · {m.me.captures} captures · Capture the Flag
       </p>
-    </div>
-  )
-}
-
-function ModeCard() {
-  return (
-    <div className="panel-quiet relative overflow-hidden">
-      <WorldArt className="absolute inset-0 h-full w-full origin-bottom-left scale-[2] opacity-35 saturate-50" />
-      <div className="absolute inset-0 bg-gradient-to-r from-card via-card/80 to-transparent" />
-      <div className="relative flex h-full flex-col justify-center p-5">
-        <p className="label">Current map</p>
-        <p className="mt-2 font-display text-2xl font-bold">Sunset Ridge</p>
-        <p className="text-sm text-ink-300">Capture the Flag · Map rotates in 2h</p>
-        <button className="mt-2 w-fit text-xs font-semibold text-neon hover:underline">Change mode</button>
-      </div>
     </div>
   )
 }
@@ -419,10 +399,7 @@ export function Home(c: Ctx) {
         </div>
       </Frame>
       <StatsStrip stats={c.stats[c.me.id]} history={c.history} />
-      <div className="grid gap-3 md:grid-cols-2">
-        <LastMatch m={c.history[0]} />
-        <ModeCard />
-      </div>
+      <LastMatch m={c.history[0]} />
     </div>
   )
 }
@@ -450,23 +427,6 @@ export function PartyPage(c: Ctx) {
           </div>
         </div>
       </Frame>
-    </div>
-  )
-}
-
-// ponytail: placeholder challenge, wire to a backend objective when one exists
-function DailyChallenge() {
-  return (
-    <div className="neon-card shrink-0 p-4">
-      <p className="label">Daily challenge</p>
-      <p className="mt-2 font-display text-lg font-semibold">Capture 3 flags</p>
-      <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-white/10" role="progressbar" aria-valuenow={1} aria-valuemax={3} aria-label="Daily challenge progress">
-        <div className="h-full w-1/3 rounded-full bg-neon" />
-      </div>
-      <p className="mt-2 flex justify-between text-xs text-ink-300 tabular-nums">
-        <span>1 / 3</span>
-        <span>+50 XP</span>
-      </p>
     </div>
   )
 }
@@ -531,7 +491,6 @@ export function FriendsSidebar(c: Ctx) {
       </div>
     </div>
     <RecentPlayers {...c} />
-    <DailyChallenge />
     </div>
   )
 }

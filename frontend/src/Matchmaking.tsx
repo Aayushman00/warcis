@@ -403,12 +403,12 @@ function Lobby({
 
   const team = (side: 'ally' | 'foe', list: QPlayer[]) => (
     <div
-      className={`flex min-h-0 flex-col gap-3 rounded-[10px] border border-neon/25 bg-gradient-to-b from-white/[0.04] to-white/[0.01] p-3 lg:row-start-1 ${side === 'ally' ? 'lg:col-start-1' : 'lg:col-start-3'}`}
+      className={`flex min-h-0 flex-col gap-3 rounded-[10px] border border-neon/25 bg-gradient-to-b from-white/[0.04] to-white/[0.01] p-3 wide:row-start-1 ${side === 'ally' ? 'wide:col-start-1' : 'wide:col-start-3'}`}
     >
       <h2 className={`font-display text-base font-bold tracking-wider uppercase ${side === 'ally' ? 'text-ally' : 'text-foe'}`}>
         {side === 'ally' ? 'Your team' : 'Opponents'}
       </h2>
-      <div className="grid min-h-0 flex-1 auto-rows-fr gap-2 sm:grid-cols-2 lg:grid-cols-1">
+      <div className="grid min-h-0 flex-1 auto-rows-fr gap-2 sm:grid-cols-2 wide:grid-cols-1">
         {list.map((p) => (
           <PlayerTile key={p.id} p={p} mine={p.id === me.id} side={side} readyIds={readyIds} loadouts={match.loadouts} />
         ))}
@@ -436,7 +436,7 @@ function Lobby({
 
   const urgent = closesIn !== null && closesIn <= 10
   return (
-    <Frame cut={28} glow className="lg:h-[calc(100dvh-7.25rem)] lg:min-h-[560px]">
+    <Frame cut={28} glow className="wide:h-[calc(100dvh-7.25rem)] wide:min-h-[560px]">
     <section className="relative flex h-full flex-col gap-3 p-4" aria-live="polite">
       {['top-3 left-3 border-t-2 border-l-2', 'bottom-3 left-3 border-b-2 border-l-2', 'bottom-3 right-3 border-b-2 border-r-2'].map((c) => (
         <span key={c} aria-hidden className={`pointer-events-none absolute size-5 border-neon/70 ${c}`} />
@@ -478,7 +478,7 @@ function Lobby({
         </p>
       )}
 
-      <div className="relative flex min-h-0 flex-1 flex-col gap-3 lg:grid lg:grid-cols-[264px_minmax(0,1fr)_264px] lg:grid-rows-[minmax(0,1fr)_auto]">
+      <div className="relative flex min-h-0 flex-1 flex-col gap-3 wide:grid wide:grid-cols-[264px_minmax(0,1fr)_264px] wide:grid-rows-[minmax(0,1fr)_auto]">
         {team('ally', ours)}
         <Armory
           cls={draft.class}

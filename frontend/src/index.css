@@ -1,5 +1,8 @@
 @import "tailwindcss";
 
+/* the three-column lobby needs room both ways; shorter screens stack and scroll */
+@custom-variant wide (@media (min-width: 1024px) and (min-height: 760px));
+
 @theme {
   --font-display: "Chakra Petch", ui-sans-serif, system-ui, sans-serif;
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;

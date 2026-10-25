@@ -25,6 +25,7 @@ BASE_R = 60
 ROUNDS_TO_WIN = 3
 MATCH_MS = 600_000  # regulation; level scores here start sudden death
 HARD_STOP_MS = 720_000  # sudden death ends here and the tiebreak decides
+INTRO_MS = 3000  # 3-2-1-GO on the clients: nobody moves or fires until it is over
 INTERMISSION_MS = 4000  # frozen pause after a non-final capture, then the arena resets
 MOVE_STEP = PLAYER_R / 2  # a dash never advances more than this between wall checks
 # Walking keeps its pre-dash behaviour: one wall check per normal tick (220 px/s * 33 ms = 7.3 px), split only on a
@@ -221,6 +222,7 @@ class Game:
         self._shot_id = 0
         self._barrier_id = 0
         self.started = now
+        self.intro_ms = INTRO_MS  # tests zero this to skip the countdown
         self.last = now
         self.scores = [0, 0]
         self.round = 1
@@ -259,7 +261,7 @@ class Game:
     def fire(self, pid: str, ax: float, ay: float, now: int) -> None:
         """Client sends only where it aims; origin, cooldown, weapon and direction are server-side."""
         p = self.players.get(pid)
-        if not p or not p.alive or self.ended or self.resume_at is not None:
+        if not p or not p.alive or self.ended or self.resume_at is not None or now - self.started < self.intro_ms:
             return
         wp = WEAPON[p.weapon]
         if now - p.last_fire < round(wp["cooldownMs"] * CLASS[p.pclass]["fireMult"]):
@@ -282,7 +284,7 @@ class Game:
     def ability(self, pid: str, ax: float, ay: float, now: int) -> None:
         """Q. A request that cannot take effect is ignored and costs nothing."""
         p = self.players.get(pid)
-        if not p or not p.alive or self.ended or self.resume_at is not None or now < p.ability_ready_at:
+        if not p or not p.alive or self.ended or self.resume_at is not None or now - self.started < self.intro_ms or now < p.ability_ready_at:
             return
         kind = CLASS[p.pclass]["ability"]
         ux, uy = ax - p.x, ay - p.y
@@ -339,6 +341,8 @@ class Game:
             self.sudden_death = True  # whoever is down now stays down; a pending intermission still resets the arena
             for p in self.players.values():
                 p.respawn_at = None
+        if now - self.started < self.intro_ms:
+            return
         if self.resume_at is not None:
             if now < self.resume_at:
                 return
@@ -706,7 +710,9 @@ if __name__ == "__main__":  # self-check: python -m app.sim
     def new(n=1, red=None, blue=None):
         def roster(prefix, lo):
             return [{"id": f"{prefix}{i}", **(lo[i] if lo and i < len(lo) else {})} for i in range(n)]
-        return Game([roster("r", red), roster("b", blue)], 0)
+        g = Game([roster("r", red), roster("b", blue)], 0)
+        g.intro_ms = 0
+        return g
 
     def lo(c="ASSAULTER", w="ASSAULT_RIFLE"):
         return {"class": c, "weapon": w}
@@ -720,6 +726,19 @@ if __name__ == "__main__":  # self-check: python -m app.sim
 
     def put(p, x, y):
         p.x, p.y = x, y
+
+    # Nobody moves, fires or casts during the 3-2-1-GO intro.
+    g = new()
+    g.intro_ms = INTRO_MS
+    r0 = g.players["r0"]
+    x0 = r0.x
+    g.set_keys("r0", {"right": True})
+    g.fire("r0", x0 + 100, r0.y, 100)
+    g.ability("r0", x0 + 100, r0.y, 100)
+    run(g, 0, INTRO_MS - 1)
+    assert r0.x == x0 and not g.shots and r0.ability_ready_at == 0, "acted during the intro"
+    run(g, INTRO_MS - 1, INTRO_MS + 500)
+    assert r0.x > x0, "frozen after the intro"
 
     # Same rules for 1v1 / 2v2 / 4v4: everyone spawns alive at their class's full HP.
     for n in (1, 2, 4):
@@ -793,6 +812,7 @@ if __name__ == "__main__":  # self-check: python -m app.sim
 
     # The nearer enemy along the path takes the hit, regardless of player order.
     g = Game([[{"id": "r0", "class": "GUARDIAN", "weapon": "SNIPER_RIFLE"}], [{"id": "far", "class": "GUARDIAN"}, {"id": "near", "class": "GUARDIAN"}]], 0)
+    g.intro_ms = 0
     put(g.players["r0"], 600, 150), put(g.players["far"], 700, 150), put(g.players["near"], 650, 150)
     g.fire("r0", 700, 150, 0)
     g.step(100)
