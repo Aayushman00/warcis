@@ -1,5 +1,4 @@
-import type { ClassId, TeamName } from './api'
-import { CLASS_INFO } from './game/classes'
+import type { TeamName } from './api'
 
 /** One scoreboard line. `team` must use the same naming as `myTeam` (server or in-game view). */
 export interface ScoreRow {
@@ -9,7 +8,6 @@ export interface ScoreRow {
   kills: number
   deaths: number
   captures: number
-  cls?: ClassId // shown as a small tag when known (matches played before classes existed have none)
 }
 
 const order = (a: ScoreRow, b: ScoreRow) => b.captures - a.captures || b.kills - a.kills || a.deaths - b.deaths || a.name.localeCompare(b.name)
@@ -20,7 +18,7 @@ function Side({ title, rows, meId, tone }: { title: string; rows: ScoreRow[]; me
     <table className="w-full table-fixed text-left text-sm tabular-nums">
       <caption className={`pb-1.5 text-left font-display text-xs font-bold tracking-[0.2em] uppercase ${head}`}>{title}</caption>
       <thead>
-        <tr className="font-display text-[10px] tracking-widest text-ink-400 uppercase">
+        <tr className="font-display text-[10px] tracking-widest text-ink-300 uppercase">
           <th scope="col" className="py-1 font-semibold">
             Player
           </th>
@@ -37,10 +35,9 @@ function Side({ title, rows, meId, tone }: { title: string; rows: ScoreRow[]; me
       </thead>
       <tbody>
         {rows.map((r) => (
-          <tr key={r.id} className={`border-t border-white/[0.06] ${r.id === meId ? 'bg-gold/[0.09] font-semibold text-gold-soft' : 'text-ink-100'}`}>
+          <tr key={r.id} className={`border-t border-white/[0.06] ${r.id === meId ? 'bg-neon/[0.09] font-semibold text-neon' : 'text-ink-100'}`}>
             <td className="truncate py-1.5 pr-2">
               {r.name}
-              {r.cls && <span className="ml-1.5 font-display text-[10px] tracking-widest text-ink-400" title={CLASS_INFO[r.cls].name}>{CLASS_INFO[r.cls].short}</span>}
             </td>
             <td className="py-1.5 text-right">{r.captures}</td>
             <td className="py-1.5 text-right">{r.kills}</td>

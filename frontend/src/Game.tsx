@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { token, type ClassId, type DecidedBy, type MatchDTO, type WeaponId } from './api'
 import type { Player } from './data'
-import { CLASS_INFO, WEAPON_INFO } from './game/classes'
 import './game/hud.css'
 import { Renderer, Timeline, type GMap, type Snapshot } from './game/render'
 import { isMuted, setMuted, sfx, unlockAudio } from './game/sfx'
 import { color, cssVars, other, type Team } from './game/tokens'
+import { ClassAvatar } from './Loadout'
 import { Scoreboard, type ScoreRow } from './Scoreboard'
+import { TouchControls, type TouchApi } from './game/TouchControls'
 
 /* In-match client. The server (services/game-service) is authoritative: this component
    sends intents (held keys, aim point), renders interpolated snapshots on the canvas, and
@@ -50,6 +51,7 @@ const KEYS: Record<string, 'up' | 'down' | 'left' | 'right'> = {
   ArrowLeft: 'left',
   ArrowRight: 'right',
 }
+const isTouch = () => new URLSearchParams(location.search).has('touch') || !!window.matchMedia?.('(pointer: coarse)').matches // ?touch forces it on desktop for testing
 const RECONNECT_FOR_MS = 60_000
 const PING_EVERY_MS = 2000
 const FIRE_SEND_MS = 20
@@ -76,6 +78,7 @@ function tiebreakLine(f: { decidedBy: DecidedBy | null; progress: Record<Team, n
   )
 }
 const cap = (t: Team) => t[0] + t.slice(1).toLowerCase()
+const ROUNDS_TO_WIN = 3 // mirrors game-service sim.ROUNDS_TO_WIN, display only
 const clock = (ms: number) => {
   const s = Math.max(0, Math.floor(ms / 1000))
   return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`
@@ -174,13 +177,15 @@ const Speaker = ({ off }: { off: boolean }) => (
     {off ? <path d="M13.5 7.5l5 5m0-5l-5 5" /> : <path d="M13.5 7a4 4 0 0 1 0 6M15.8 4.8a7 7 0 0 1 0 10.4" />}
   </svg>
 )
-const Emblem = ({ letter }: { letter: string }) => (
-  <svg className="g-emblem" viewBox="0 0 34 38" aria-hidden>
-    <path d="M17 1 32 7v11c0 9-6.5 15.5-15 19C8.5 33.5 2 27 2 18V7z" fill="currentColor" opacity="0.18" />
-    <path d="M17 1 32 7v11c0 9-6.5 15.5-15 19C8.5 33.5 2 27 2 18V7z" fill="none" stroke="currentColor" strokeWidth="1.6" />
-    <text x="17" y="24" textAnchor="middle" fill="currentColor" style={{ font: `700 15px var(--g-font-display)` }}>
-      {letter}
-    </text>
+
+const BoardIcon = () => (
+  <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" aria-hidden>
+    <path d="M4 5h12M4 10h12M4 15h12" />
+  </svg>
+)
+const FullscreenIcon = () => (
+  <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+    <path d="M3 7V3h4M13 3h4v4M17 13v4h-4M7 17H3v-4" />
   </svg>
 )
 
@@ -238,9 +243,7 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
   const respawnEl = useRef<HTMLSpanElement>(null)
   const resumeEl = useRef<HTMLElement>(null)
   const ringEl = useRef<SVGCircleElement>(null)
-  const qEl = useRef<HTMLDivElement>(null)
-  const qTime = useRef<HTMLSpanElement>(null)
-  const catalogRef = useRef<Catalog | null>(null)
+  const lastHp = useRef<number | null>(null)
   const tl = useRef(new Timeline())
   const rend = useRef<Renderer | null>(null)
   const [map, setMap] = useState<GMap | null>(null)
@@ -254,6 +257,11 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
   const [muted, setMutedUi] = useState(isMuted)
   const [ping, setPing] = useState<number | null>(null)
   const [showBoard, setShowBoard] = useState(false)
+  const [touch] = useState(isTouch)
+  const [abilities, setAbilities] = useState<Record<string, string>>({})
+  const [fullscreen, setFullscreen] = useState(false)
+  const touchApi = useRef<TouchApi | null>(null)
+  const skillEl = useRef<HTMLButtonElement>(null)
 
   useEffect(() => {
     unlockAudio() // the player just clicked "Enter match", so audio is allowed
@@ -291,7 +299,7 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
       introPlayed = true
       ;([3, 2, 1] as const).forEach((n, i) => later(i * 480, () => (setIntro(n), sfx.countdown(false))))
       later(1440, () => (setIntro('go'), sfx.countdown(true)))
-      later(2540, () => setIntro(null))
+      later(2540, () => (setIntro(null), setBanner({ id: ++seq, title: 'STEAL THE ENEMY FLAG', sub: 'Bring it back to your base', team: 'BLUE' })))
     }
 
     /** Turn the difference between two authoritative snapshots into feedback, timed to render time. */
@@ -392,8 +400,9 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
           tl.current.reset() // fresh timeline after a reconnect: no sliding from stale positions
           const vm = viewMap(m.map, view)
           dims = vm
-          catalogRef.current = m.catalog
           rend.current ??= new Renderer(vm, me.id)
+          for (const [id, c] of Object.entries(m.catalog.classes)) rend.current.cooldowns[id] = c.cooldownMs
+          setAbilities(Object.fromEntries(Object.entries(m.catalog.classes).map(([id, c]) => [id, c.ability])))
           setMap((old) => old ?? vm)
           setConn('live')
           sendInput()
@@ -432,6 +441,38 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
       e.preventDefault()
       held[k] = down
       sendInput()
+    }
+    // Touch: the two sticks and the skill button drive the same intents as keys + mouse. Directions are in
+    // view space (like the cursor), so `fire` / `sendInput` mirror them for team 1 exactly as for the mouse.
+    let aimDir: { x: number; y: number } | null = null
+    let moveDir = { x: 1, y: 0 }
+    const dirPoint = (d: { x: number; y: number }) => {
+      const m = tl.current.latest()?.players.find((p) => p.id === me.id)
+      return m && m.x !== null && m.y !== null ? { x: m.x + d.x * 300, y: m.y + d.y * 300 } : null
+    }
+    touchApi.current = {
+      move(x, y) {
+        const m = Math.hypot(x, y)
+        const next = { up: m > 0.3 && y < -0.38, down: m > 0.3 && y > 0.38, left: m > 0.3 && x < -0.38, right: m > 0.3 && x > 0.38 }
+        if (m > 0.3) moveDir = { x: x / m, y: y / m }
+        if ((Object.keys(next) as (keyof typeof next)[]).every((k) => held[k] === next[k])) return
+        Object.assign(held, next)
+        sendInput()
+      },
+      aim(x, y) {
+        const m = Math.hypot(x, y)
+        aimDir = m < 0.25 ? null : { x: x / m, y: y / m } // dragged out = shooting
+        const p = aimDir && dirPoint(aimDir)
+        if (aimDir && p && rend.current) {
+          cursor = p
+          rend.current.myAim = Math.atan2(aimDir.y, aimDir.x)
+        }
+      },
+      skill() {
+        unlockAudio()
+        cursor = dirPoint(aimDir ?? moveDir) ?? cursor
+        cast()
+      },
     }
     const kd = onKey(true)
     const ku = onKey(false)
@@ -473,9 +514,10 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
     // While LMB is held, keep sending the aim point. The server's per-weapon cooldown decides which ones
     // count, so a fast weapon is never throttled by the client (a coarse client interval would round it up).
     const autofire = setInterval(() => {
-      if (aim && Date.now() - lastFire >= FIRE_SEND_MS) {
+      const target = aimDir ? dirPoint(aimDir) : aim
+      if (target && Date.now() - lastFire >= FIRE_SEND_MS) {
         lastFire = Date.now()
-        fire(aim)
+        fire(target)
       }
     }, FIRE_SEND_MS)
     const pinger = setInterval(() => send({ t: 'ping', c: performance.now() }), PING_EVERY_MS)
@@ -487,6 +529,7 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
       ws.close()
       clearInterval(autofire)
       clearInterval(pinger)
+      touchApi.current = null
       window.removeEventListener('keydown', kd)
       window.removeEventListener('keyup', ku)
       window.removeEventListener('blur', blur)
@@ -515,17 +558,20 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
       const t = tl.current.renderTime()
       // Regulation counts down to 10:00; sudden death then counts down the 2 minutes to the tiebreak.
       const elapsed = s.state === 'ENDED' ? s.elapsed : s.elapsed - (s.now - t)
-      if (clockEl.current) clockEl.current.textContent = clock((s.suddenDeath ? s.hardStopMs : s.matchMs) - elapsed)
+      const remaining = (s.suddenDeath ? s.hardStopMs : s.matchMs) - elapsed
+      if (clockEl.current) {
+        clockEl.current.textContent = clock(remaining)
+        clockEl.current.parentElement?.classList.toggle('is-low', s.state === 'PLAYING' && remaining > 0 && remaining <= 10_000)
+      }
       if (s.resumesAt && resumeEl.current) resumeEl.current.textContent = String(Math.max(1, Math.ceil((s.resumesAt - t) / 1000)))
       const mine = s.players.find((p) => p.id === me.id)
-      if (mine && qEl.current) {
-        // Q cooldown ring + countdown, straight from the server's abilityReadyAt (no React re-render per frame).
-        const total = catalogRef.current?.classes[mine.class]?.cooldownMs ?? 1
-        const left = Math.max(0, (mine.abilityReadyAt ?? 0) - s.now)
-        qEl.current.style.setProperty('--cd', String(Math.min(1, left / total)))
-        qEl.current.classList.toggle('is-ready', left === 0 && mine.alive)
-        qEl.current.classList.toggle('is-active', mine.invisible || mine.dashing || s.barriers.some((b) => b.owner === mine.id))
-        if (qTime.current) qTime.current.textContent = left > 0 ? (left / 1000).toFixed(left < 10_000 ? 1 : 0) : ''
+      if (skillEl.current) {
+        const total = rend.current?.cooldowns[mine?.class ?? ''] ?? 0
+        const left = Math.max(0, (mine?.abilityReadyAt ?? 0) - t)
+        const ready = !total || left === 0
+        skillEl.current.style.setProperty('--cd', String(ready ? 1 : 1 - Math.min(1, left / total)))
+        skillEl.current.classList.toggle('is-ready', ready)
+        skillEl.current.disabled = !mine?.alive
       }
       if (mine?.respawnAt) {
         const left = Math.max(0, mine.respawnAt - t)
@@ -581,7 +627,7 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
     if (own.state === 'DROPPED') return { text: 'Recover your flag', team: mine.team, icon: <Alert /> }
     if (theirs.state === 'CARRIED') return { text: `Escort ${theirs.carrier?.name ?? 'your carrier'} home`, team: mine.team, icon: <FlagIcon /> }
     if (secured) return { text: 'Flag secured', team: null, icon: <FlagIcon /> }
-    return { text: 'Steal the enemy flag', team: null, icon: <FlagIcon /> }
+    return null
   })()
 
   const wing = (t: Team) => {
@@ -593,17 +639,18 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
         <div className="g-wing-id">
           <span className="g-team-name">
             {t}
-            <small>{alive} alive</small>
           </span>
-          <span className="g-pips" aria-label={`${alive} of ${hud?.roster[t].length ?? 0} ${t.toLowerCase()} players alive`}>
+          <span className="g-pips" title="Players alive" aria-label={`${alive} of ${hud?.roster[t].length ?? 0} ${t.toLowerCase()} players alive`}>
             {(hud?.roster[t] ?? []).map((p) => (
               <i key={p.id} className={`g-pip ${p.alive ? '' : 'is-down'} ${p.connected ? '' : 'is-offline'}`} />
             ))}
           </span>
-          {f && (
+          <span className="g-alive" aria-hidden>
+            {alive}/{hud?.roster[t].length ?? 0} alive
+          </span>
+          {f && f.state !== 'AT_BASE' && (
             <span className={`g-flagtab ${f.state === 'CARRIED' ? 'is-taken' : f.state === 'DROPPED' ? 'is-dropped' : ''}`}>
               <FlagIcon />
-              {f.state === 'AT_BASE' && 'Flag home'}
               {f.state === 'CARRIED' && (
                 <>
                   {!hud?.ended && <span className="g-live-dot" />}
@@ -632,20 +679,25 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
 
   const won = final?.winner ? final.winner === (myTeam ?? 'BLUE') : null // everyone is shown as BLUE (see viewOf)
   const carrying = !!mine?.carrying && !hud?.ended
+  const hpHit = mine && lastHp.current !== null && mine.hp < lastHp.current // flash the bar when health drops
   const hpColor = !mine ? color.hpHigh : mine.hp > mine.maxHp / 2 ? color.hpHigh : mine.hp > mine.maxHp / 4 ? color.hpMid : color.hpLow
 
+  useEffect(() => {
+    lastHp.current = mine?.hp ?? null
+  })
+
   return (
-    <div className="g-root" style={cssVars() as CSSProperties}>
+    <div className={`g-root ${touch ? 'is-touch' : ''}`} style={cssVars() as CSSProperties}>
       {ping !== null && !hud?.ended && (
         <span className="g-ping" title="Round-trip time to the match server" style={{ color: ping < 80 ? color.hpHigh : ping < 150 ? color.hpMid : color.hpLow }}>
-          {ping} ms
+          {ping < 1 ? '<1' : ping} ms
         </span>
       )}
       <header className="g-plate" aria-label="Match score">
         {wing('BLUE')}
         <div className="g-clock">
           <span ref={clockEl}>10:00</span>
-          {hud && !hud.ended && <small className={`g-round-tag ${hud.suddenDeath ? 'is-sudden' : ''}`}>{hud.suddenDeath ? 'SUDDEN DEATH' : `ROUND ${hud.round}`}</small>}
+          {hud && !hud.ended && <small className={`g-round-tag ${hud.suddenDeath ? 'is-sudden' : ''}`}>{hud.suddenDeath ? 'SUDDEN DEATH' : `ROUND ${hud.round} · FIRST TO ${ROUNDS_TO_WIN}`}</small>}
         </div>
         {wing('RED')}
       </header>
@@ -680,7 +732,6 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
                 {intro === 'go' ? (
                   <div className="g-go">
                     <span className="g-go-title">CAPTURE THE FLAG</span>
-                    <span className="g-go-sub">Steal the enemy flag and bring it to your base</span>
                   </div>
                 ) : (
                   <span key={intro} className="g-count">
@@ -704,7 +755,7 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
 
             {showBoard && !hud?.ended && hud && (
               <div className="g-layer g-boardlayer">
-                <Board rows={hud.board} />
+                <Board rows={hud.board} compact={touch} />
               </div>
             )}
 
@@ -784,19 +835,16 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
 
       <footer className={`g-bar ${carrying && mine ? `is-carrying ${tc(other(mine.team))}` : ''}`}>
         <div className={`g-me ${myTeam ? tc(myTeam) : ''}`}>
-          {mine && <Emblem letter={mine.name[0]?.toUpperCase() ?? '?'} />}
+          {mine && <ClassAvatar cls={mine.cls} size={touch ? 30 : 44} />}
           <div style={{ minWidth: 0 }}>
             <div className="g-me-name">{mine?.name ?? me.name}</div>
-            <div className={`g-me-state ${mine && !mine.alive ? 'is-down' : ''}`}>
-              {mine ? (mine.alive ? `${cap(mine.team)} team · ${CLASS_INFO[mine.cls].name} · ${WEAPON_INFO[mine.weapon].name}` : 'Eliminated') : 'Spectating'}
-            </div>
+            {!mine?.alive && <div className={`g-me-state ${mine ? 'is-down' : ''}`}>{mine ? 'Eliminated' : 'Spectating'}</div>}
           </div>
           {mine && (
-            <div className="g-hp" aria-label={`Health ${mine.hp}`}>
-              <span className="g-hp-seg" style={{ ['--hp' as string]: hpColor } as CSSProperties}>
-                {[0, 1, 2, 3].map((i) => (
-                  <i key={i} className={mine.hp >= ((i + 1) * mine.maxHp) / 4 ? '' : 'is-empty'} />
-                ))}
+            <div className="g-hp" role="meter" aria-label="Health" aria-valuemin={0} aria-valuemax={mine.maxHp} aria-valuenow={mine.hp}>
+              <span className="g-hp-track" style={{ ['--hp' as string]: hpColor } as CSSProperties}>
+                <i style={{ width: `${Math.max(0, Math.min(100, (mine.hp / mine.maxHp) * 100))}%` }} />
+                {hpHit && <b key={mine.hp} className="g-hp-flash" />}
               </span>
               <span className="g-hp-num">{mine.hp}</span>
             </div>
@@ -813,25 +861,41 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
         )}
 
         <div className="g-right">
-          {mine && (
-            <div ref={qEl} className="g-q" title={CLASS_INFO[mine.cls].q} aria-label={`${CLASS_INFO[mine.cls].qName}: press Q`}>
-              <span className="g-q-key">Q</span>
-              <span className="g-q-name">{CLASS_INFO[mine.cls].qName}</span>
-              <span ref={qTime} className="g-q-time" />
-            </div>
-          )}
           {carrying && mine && (
-            <span className={`g-carry ${tc(other(mine.team))}`}>
-              <FlagIcon />
-              {other(mine.team)} FLAG
+            <span className="g-carry" role="status">
+              <FlagIcon /> CARRYING FLAG
             </span>
           )}
-          {!hud?.ended && <span className="g-hint">Hold TAB for stats</span>}
+          {touch && (
+            <>
+              <button className="g-icon-btn" onClick={() => setShowBoard((b) => !b)} aria-label="Scoreboard" aria-pressed={showBoard}>
+                <BoardIcon />
+              </button>
+              {'requestFullscreen' in document.documentElement && (
+                <button className="g-icon-btn" onClick={() => toggleFullscreen().then(() => setFullscreen(!!document.fullscreenElement))} aria-label={fullscreen ? 'Exit full screen' : 'Full screen'}>
+                  <FullscreenIcon />
+                </button>
+              )}
+            </>
+          )}
           <button className="g-icon-btn" onClick={() => (setMuted(!muted), setMutedUi(!muted))} aria-label={muted ? 'Unmute sound' : 'Mute sound'} aria-pressed={muted} title={muted ? 'Unmute' : 'Mute'}>
             <Speaker off={muted} />
           </button>
         </div>
       </footer>
+
+      {touch && !hud?.ended && !fatal && <TouchControls api={touchApi} skillRef={skillEl} skillName={abilities[mine?.cls ?? ''] ?? 'Skill'} />}
     </div>
   )
+}
+
+/** Full screen + landscape lock where the browser allows it (Android Chrome); a no-op elsewhere. */
+async function toggleFullscreen() {
+  try {
+    if (document.fullscreenElement) return void (await document.exitFullscreen())
+    await document.documentElement.requestFullscreen()
+    await (screen.orientation as ScreenOrientation & { lock?: (o: string) => Promise<void> }).lock?.('landscape')
+  } catch {
+    /* denied or unsupported: playing windowed is fine */
+  }
 }

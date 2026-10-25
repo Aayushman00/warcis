@@ -9,13 +9,14 @@ export const color = {
   deck2: '#121A26',
   rule: 'rgba(148, 176, 214, 0.14)', // thin borders / dividers
   ruleStrong: 'rgba(148, 176, 214, 0.28)',
-  ink: '#E9EEF6', // primary text
-  dim: '#8C9AB0', // secondary text
-  faint: '#56637A',
+  ink: '#F2F5FF', // primary text
+  dim: '#9AA6C0', // secondary text (the one secondary gray, same as the app)
+  faint: '#6B7794',
+  neon: '#22E4FF', // system accent: arena edges, grid, HUD borders
   signal: '#FFB547', // offline / reconnecting only
-  hpHigh: '#5BE59B',
-  hpMid: '#FFC857',
-  hpLow: '#FF5D6C',
+  hpHigh: '#4ADE80',
+  hpMid: '#FFC531',
+  hpLow: '#FF4D6D',
   // map
   ground: '#0A0F17',
   groundAlt: '#0C121C',
@@ -26,8 +27,8 @@ export const color = {
 } as const
 
 export const team = {
-  RED: { base: '#FF4F5E', light: '#FF97A0', deep: '#7A1522', ink: '#FFE3E6' },
-  BLUE: { base: '#2FC6FF', light: '#98E3FF', deep: '#0B4A6B', ink: '#E0F7FF' },
+  RED: { base: '#FF4D6D', light: '#FF9BAE', deep: '#7A1530', ink: '#FFE3E9' },
+  BLUE: { base: '#38BDF8', light: '#9BDDFB', deep: '#0B4A6B', ink: '#E0F7FF' },
 } as const satisfies Record<Team, { base: string; light: string; deep: string; ink: string }>
 
 export const font = {

@@ -102,7 +102,7 @@ export function drawAvatar(ctx: CanvasRenderingContext2D, cls: ClassId, c: Palet
   // Assaulter thrusters burn behind the body, so they go first.
   if (cls === 'ASSAULTER') {
     for (const s of [-1, 1]) {
-      const len = R * (0.42 + 0.16 * Math.sin(t / 37 + s * 1.7) + 0.08 * Math.sin(t / 13 + s))
+      const len = R * (0.55 + 0.1 * Math.sin(t / 37) + 0.05 * Math.sin(t / 13) + 0.05 * s * Math.sin(t / 53)) // twin flames: equal at rest (t=0), so a still frame shows both
       const g = ctx.createLinearGradient(-R * 0.75, 0, -R * 0.75 - len, 0)
       g.addColorStop(0, c.ink)
       g.addColorStop(0.35, c.light)

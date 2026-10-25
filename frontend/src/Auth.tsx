@@ -54,8 +54,8 @@ export function Auth({ onAuth }: { onAuth: (s: Session) => void }) {
         </div>
       </div>
 
-      <div className="flex items-center justify-center p-6">
-        <form onSubmit={submit} className="panel w-full max-w-sm animate-rise p-7" noValidate>
+      <div className="flex items-center justify-center p-6 [@media(max-height:520px)]:p-2">
+        <form onSubmit={submit} className="panel w-full max-w-sm animate-rise p-7 [@media(max-height:520px)]:p-4" noValidate>
           <Logo className="mb-6 lg:hidden" />
           <div className="mb-6 grid grid-cols-2 rounded-lg bg-ink-950/60 p-1 text-sm font-semibold">
             {(['in', 'up'] as const).map((m) => (

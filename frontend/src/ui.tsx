@@ -76,7 +76,7 @@ export function Avatar({ name, size = 40, dim = false }: { name: string; size?: 
 }
 
 const DOT: Record<Status, string> = {
-  online: 'bg-online',
+  online: 'bg-online animate-dot',
   away: 'bg-away',
   ingame: 'bg-ingame',
   offline: 'bg-ink-600',
@@ -192,3 +192,32 @@ export function WorldArt({ className = '' }: { className?: string }) {
     </svg>
   )
 }
+
+/** Cut-corner card with a real 1px border: an outer clipped shape in the border colour, an inner one inset by 1px. */
+export function Frame({ cut, glow, className = '', children }: { cut: number; glow?: boolean; className?: string; children: ReactNode }) {
+  const clip = (n: number) => ({ clipPath: `polygon(0 0, calc(100% - ${n}px) 0, 100% ${n}px, 100% 100%, 0 100%)` })
+  return (
+    <div className={className} style={glow ? { filter: 'drop-shadow(0 0 16px color-mix(in srgb, var(--color-neon) 28%, transparent))' } : undefined}>
+      <div className="h-full bg-neon/60" style={clip(cut)}>
+        <div className="relative h-full overflow-hidden bg-card" style={{ margin: 1, height: 'calc(100% - 2px)', ...clip(cut - 1) }}>
+          {children}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/** Dashed border that slowly marches; the parent must be `relative`. */
+export const DashBorder = ({ r = 14 }: { r?: number }) => (
+  <svg className="pointer-events-none absolute inset-0 size-full overflow-visible" aria-hidden>
+    <rect x=".5" y=".5" rx={r} fill="none" stroke="currentColor" strokeOpacity=".45" className="dash-march" style={{ width: 'calc(100% - 1px)', height: 'calc(100% - 1px)' }} />
+  </svg>
+)
+
+/** Page title: display font, soft cyan glow, short gold bar. */
+export const PageTitle = ({ children, className = '' }: { children: ReactNode; className?: string }) => (
+  <h1 className={`flex items-center gap-3 font-display text-3xl font-bold tracking-wide [text-shadow:0_0_24px_color-mix(in_srgb,var(--color-neon)_25%,transparent)] ${className}`}>
+    <span aria-hidden className="h-6 w-1 rounded-full bg-gold" />
+    {children}
+  </h1>
+)

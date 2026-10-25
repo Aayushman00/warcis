@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { api, type HistoryItem, type HistoryPage, type PlayerStats } from './api'
 import type { Player } from './data'
 import { Scoreboard } from './Scoreboard'
-import { Avatar, Icon } from './ui'
+import { Avatar, Frame, Icon } from './ui'
 
 const PAGE = 10
 const mmss = (ms: number) => `${Math.floor(ms / 60000)}:${String(Math.round(ms / 1000) % 60).padStart(2, '0')}`
@@ -11,10 +11,10 @@ const pct = (r: number | null) => (r === null ? '–' : `${Math.round(r * 100)}%
 
 function Tile({ label, value, sub, tone }: { label: string; value: string | number; sub?: string; tone?: string }) {
   return (
-    <div className="rounded-xl bg-white/[0.03] p-3 sm:p-4">
+    <div className="rounded-[10px] border border-neon/20 bg-card p-3 transition duration-200 hover:-translate-y-0.5 hover:border-neon/60 sm:p-4">
       <p className="label">{label}</p>
       <p className={`mt-1 font-display text-3xl font-bold tabular-nums ${tone ?? ''}`}>{value}</p>
-      {sub && <p className="text-xs text-ink-400">{sub}</p>}
+      {sub && <p className="text-xs text-ink-300">{sub}</p>}
     </div>
   )
 }
@@ -23,29 +23,29 @@ function Row({ m, meId, open, toggle }: { m: HistoryItem; meId: string; open: bo
   const win = m.outcome === 'WIN'
   const tie = m.outcome === 'TIE'
   return (
-    <li className="border-t border-white/[0.06] first:border-t-0">
+    <li className={`border-t border-white/[0.06] border-l-[3px] first:border-t-0 ${win ? 'border-l-online' : tie ? 'border-l-ink-300' : 'border-l-foe'}`}>
       <button
         onClick={toggle}
         aria-expanded={open}
         className="grid w-full grid-cols-[5.5rem_1fr_auto] items-center gap-3 px-3 py-3 text-left hover:bg-white/[0.03] sm:grid-cols-[6rem_1fr_9rem_auto] sm:px-4"
       >
-        <span className={`font-display text-sm font-bold tracking-[0.15em] ${win ? 'text-online' : tie ? 'text-ink-400' : 'text-foe'}`}>{win ? 'VICTORY' : tie ? 'DRAW' : 'DEFEAT'}</span>
+        <span className={`font-display text-sm font-bold tracking-[0.15em] ${win ? 'text-online' : tie ? 'text-ink-300' : 'text-foe'}`}>{win ? 'VICTORY' : tie ? 'DRAW' : 'DEFEAT'}</span>
         <span className="min-w-0">
           <span className="block truncate text-sm font-semibold">
             Squad · {m.players.length / 2}v{m.players.length / 2}
           </span>
-          <span className="block truncate text-xs text-ink-400">
+          <span className="block truncate text-xs text-ink-300">
             {when(m.played_at)} · {mmss(m.duration_ms)}
           </span>
         </span>
         <span className="text-right text-sm tabular-nums max-sm:hidden" title="Kills / deaths / captures">
           <b>{m.me.kills}</b> K · <b>{m.me.deaths}</b> D · <b>{m.me.captures}</b> Cap
         </span>
-        <Icon name="chevron" className={`size-4 text-ink-400 transition ${open ? 'rotate-90' : ''}`} />
+        <Icon name="chevron" className={`size-4 text-ink-300 transition ${open ? 'rotate-90' : ''}`} />
       </button>
       {open && (
         <div className="animate-rise px-3 pt-1 pb-4 sm:px-4">
-          <p className="mb-3 text-xs text-ink-400 sm:hidden">
+          <p className="mb-3 text-xs text-ink-300 sm:hidden">
             {m.me.kills} K · {m.me.deaths} D · {m.me.captures} Cap
           </p>
           <Scoreboard rows={m.players.map((p) => ({ ...p, cls: p.class }))} meId={meId} myTeam={m.my_team} />
@@ -87,15 +87,18 @@ export function Profile({ me, stats }: { me: Player; stats?: PlayerStats }) {
 
   const s = stats
   return (
-    <div className="space-y-6">
-      <section className="panel p-4 sm:p-6">
+    <div className="stagger space-y-6 pb-10">
+      <Frame cut={28} glow>
+        <div className="bg-[radial-gradient(ellipse_at_85%_0%,color-mix(in_srgb,var(--color-neon)_12%,transparent),transparent_60%)] p-4 sm:p-6">
         <div className="flex items-center gap-4">
           <Avatar name={me.name} size={72} />
           <div className="min-w-0">
-            <p className="label">Profile</p>
-            <h1 className="truncate font-display text-3xl font-bold">
+            <p className="label flex items-center gap-2">
+              <span aria-hidden className="h-3 w-1 rounded-full bg-gold" /> Profile
+            </p>
+            <h1 className="truncate font-display text-3xl font-bold [text-shadow:0_0_24px_color-mix(in_srgb,var(--color-neon)_25%,transparent)]">
               {me.name}
-              <span className="ml-2 text-base font-normal text-ink-400">#{me.tag}</span>
+              <span className="ml-2 text-base font-normal text-ink-300">#{me.tag}</span>
             </h1>
           </div>
         </div>
@@ -104,14 +107,17 @@ export function Profile({ me, stats }: { me: Player; stats?: PlayerStats }) {
           <Tile label="Wins" value={s?.wins ?? '–'} tone="text-online" />
           <Tile label="Losses" value={s?.losses ?? '–'} tone="text-foe" />
           <Tile label="Win rate" value={s ? pct(s.win_rate) : '–'} />
-          <Tile label="Captures" value={s?.captures ?? '–'} tone="text-gold" />
+          <Tile label="Captures" value={s?.captures ?? '–'} tone="text-ink-100" />
           <Tile label="K/D" value={s ? s.kd.toFixed(2) : '–'} sub={s ? `${s.kills} kills · ${s.deaths} deaths` : undefined} />
         </div>
-      </section>
+        </div>
+      </Frame>
 
       <section>
         <div className="mb-3 flex items-center justify-between">
-          <h2 className="label">Match history</h2>
+          <h2 className="label flex items-center gap-2 !text-ink-100">
+            <span aria-hidden className="h-3 w-1 rounded-full bg-gold" /> Match history
+          </h2>
           <button onClick={reload} disabled={state === 'loading'} className="btn-ghost py-1 text-xs" aria-label="Refresh match history">
             <Icon name="refresh" /> Refresh
           </button>
@@ -120,9 +126,9 @@ export function Profile({ me, stats }: { me: Player; stats?: PlayerStats }) {
           {state === 'error' ? (
             <p className="p-5 text-sm text-foe">Could not load your match history.</p>
           ) : state === 'loading' && !items.length ? (
-            <p className="p-5 text-sm text-ink-400">Loading…</p>
+            <p className="p-5 text-sm text-ink-300">Loading…</p>
           ) : !items.length ? (
-            <p className="p-5 text-sm text-ink-400">No finished matches yet. Capture the flag to put one on the board.</p>
+            <p className="p-5 text-sm text-ink-300">No finished matches yet. Capture the flag to put one on the board.</p>
           ) : (
             <ul>
               {items.map((m) => (

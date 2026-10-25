@@ -1,34 +1,22 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import type { Loadout, MatchDTO, MMStatus, QPlayer, QueueDTO, TeamDTO } from './api'
 import { MAX_PARTY, type Player } from './data'
 import { Game, type Rematch } from './Game'
 import { BUILD, CLASS_IDS, CLASS_INFO, WEAPON_IDS, WEAPON_INFO } from './game/classes'
 import { sfx } from './game/sfx'
-import { Armory, ClassAvatar, HiddenAvatar } from './Loadout'
-import { Avatar, Icon } from './ui'
+import { Armory, ClassAvatar } from './Loadout'
+import { Avatar, DashBorder, Frame, Icon } from './ui'
 
-type Group = { label: string; players: QPlayer[]; mine?: boolean }
-
-/**
- * Turn a server team ({players, parties}) into labelled party groups.
- * Your own party first ("Party A · You"), other multi-player parties get B, C, … and solos "Solo".
- */
-function groupsOf(team: TeamDTO, meId: string, letters: { next: number }): Group[] {
-  const byId = new Map(team.players.map((p) => [p.id, p]))
-  const groups = team.parties.map((pt) => {
-    const players = pt.players.map((id) => byId.get(id)!).filter(Boolean)
-    const mine = pt.players.includes(meId)
-    return { players, mine, label: '' }
-  })
-  groups.sort((a, b) => Number(b.mine) - Number(a.mine))
-  for (const g of groups) {
-    g.label = g.mine ? (g.players.length > 1 ? 'Party A · You' : 'You') : g.players.length > 1 ? `Party ${String.fromCharCode(66 + letters.next++)}` : 'Solo'
-  }
-  return groups
+/** A team's players as flat tiles: you first, then your party-mates, then everyone else in the server's order. */
+function playersOf(team: TeamDTO, meId: string): QPlayer[] {
+  const mates = new Set(team.parties.find((pt) => pt.players.includes(meId))?.players)
+  const rank = (p: QPlayer) => (p.id === meId ? 0 : mates.has(p.id) ? 1 : 2)
+  return [...team.players].sort((a, b) => rank(a) - rank(b)) // stable: ties keep the server's order
 }
 
 const clock = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
 const modeLabel = (_m: 'SQUAD') => 'Squad'
+const EST_SECS = 30 // shown as the queue estimate; past it the screen says so
 
 export function Matchmaking({
   status,
@@ -60,141 +48,163 @@ function Searching({ q, me, onCancel }: { q: QueueDTO; me: Player; onCancel: () 
     return () => clearInterval(t)
   }, [])
   const elapsed = Math.max(0, Math.floor((now - Date.parse(q.joined_at)) / 1000))
-  const ours = groupsOf(q.team, me.id, { next: 0 })
+  const ours = playersOf(q.team, me.id)
   const filled = q.team.players.length
   const modeName = modeLabel(q.mode)
   const openSlots = q.fill ? MAX_PARTY - filled : 0
   const title = openSlots > 0 ? 'Searching for match' : 'Searching for opponents'
 
+  const slow = elapsed > EST_SECS
+
   return (
-    <section className="panel relative flex min-h-[calc(100vh-8rem)] flex-col items-center overflow-hidden px-4 py-10 text-center" aria-live="polite">
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_50%_30%,rgb(76_201_240/0.10),transparent_60%)]" />
-      <p className="label relative">
-        {modeName} · 4v4 · EU West · <span className="text-ink-300">{q.players_in_queue.toLocaleString()} in queue</span>
+    <Frame cut={28} glow>
+    <section className="relative flex min-h-[calc(100vh-8rem)] flex-col items-center justify-center gap-8 px-4 py-10 text-center">
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_50%_35%,color-mix(in_srgb,var(--color-neon)_14%,transparent),transparent_60%)]" />
+      {/* corner brackets */}
+      {['top-3 left-3 border-t-2 border-l-2', 'bottom-3 left-3 border-b-2 border-l-2', 'bottom-3 right-3 border-b-2 border-r-2'].map((c) => (
+        <span key={c} aria-hidden className={`pointer-events-none absolute size-5 border-neon/70 ${c}`} />
+      ))}
+      <p className="label relative !text-ink-100">
+        {modeName} · 4v4 · EU West · <span className="text-ink-300 tabular-nums">{q.players_in_queue.toLocaleString()} in queue</span>
       </p>
 
       {/* Radar */}
-      <div className="relative my-8 grid size-52 place-items-center">
+      <div className="relative grid size-56 place-items-center" aria-hidden>
         {[100, 72, 44].map((s) => (
-          <span key={s} className="absolute rounded-full border border-ally/15" style={{ width: `${s}%`, height: `${s}%` }} />
+          <span key={s} className="absolute rounded-full border border-neon/40" style={{ width: `${s}%`, height: `${s}%` }} />
         ))}
-        <span className="absolute inset-0 animate-pulse-ring rounded-full border border-ally/40" />
-        <span className="absolute inset-0 animate-sweep rounded-full bg-[conic-gradient(from_0deg,transparent_0deg,rgb(76_201_240/0.28)_50deg,transparent_60deg)]" />
+        <span className="absolute inset-0 rounded-full shadow-[0_0_40px_-6px_color-mix(in_srgb,var(--color-neon)_45%,transparent)]" />
+        <span className="absolute inset-[-6px] rounded-full opacity-60 [background:repeating-conic-gradient(var(--color-neon)_0_1deg,transparent_1deg_6deg)] [mask-image:radial-gradient(circle,transparent_calc(100%-8px),black_calc(100%-7px))]" />
+        <span className="absolute inset-x-0 top-1/2 h-px bg-neon/20" />
+        <span className="absolute inset-y-0 left-1/2 w-px bg-neon/20" />
+        <span className="absolute inset-0 animate-pulse-ring rounded-full border border-neon/60" />
+        <span className="absolute inset-0 animate-sweep rounded-full bg-[conic-gradient(from_0deg,transparent_0deg,color-mix(in_srgb,var(--color-neon)_35%,transparent)_50deg,transparent_60deg)]" />
         <div className="relative">
-          <p className="font-display text-4xl font-bold tabular-nums">{clock(elapsed)}</p>
-          <p className="text-xs text-ink-400">Est. 0:30</p>
+          <p className={`font-display text-4xl font-bold tabular-nums [text-shadow:0_0_20px_color-mix(in_srgb,var(--color-neon)_45%,transparent)] ${slow ? 'text-away' : ''}`}>{clock(elapsed)}</p>
+          <p className="text-xs text-ink-300">Est. {clock(EST_SECS)}</p>
         </div>
       </div>
 
-      <h1 className="relative font-display text-3xl font-bold tracking-wider uppercase">{title}</h1>
-      <p className="relative mt-2 text-sm text-ink-300">
-        Party <b>{q.size} / {MAX_PARTY}</b> <span className="mx-2 text-ink-600">|</span> Mode <b>{modeName}</b>
-        <span className="mx-2 text-ink-600">|</span> <b>{q.fill ? 'Fill' : 'No fill'}</b>
-      </p>
+      {/* status text only: the ticking timer above stays out of the live region */}
+      <div className="relative" aria-live="polite">
+        <h1 className="font-display text-3xl font-bold tracking-[0.12em] uppercase [text-shadow:0_0_24px_color-mix(in_srgb,var(--color-neon)_30%,transparent)]">{slow ? 'Taking longer than usual…' : title}</h1>
+        <p className="mt-2 flex items-center justify-center gap-3 text-sm text-ink-300">
+          <span>
+            Party <b className="text-ink-100 tabular-nums">{q.size} / {MAX_PARTY}</b>
+          </span>
+          <span aria-hidden className="h-3 w-px bg-white/20" />
+          <span className={`rounded-full border px-2.5 py-0.5 text-xs font-semibold ${q.fill ? 'border-online/40 bg-online/10 text-online' : 'border-white/15 text-ink-300'}`}>
+            Fill: {q.fill ? 'On' : 'Off'}
+          </span>
+        </p>
+        {slow && (
+          <p className="mx-auto mt-3 max-w-md text-sm text-ink-300">
+            {q.fill ? 'Try again in a minute, or pick a different region.' : 'Fill is off, so only same-size parties match. Cancel and queue with Fill on to find a game faster.'}
+          </p>
+        )}
+      </div>
 
       {/* Team formation: live grouping from the server's current queue packing */}
-      <div className="relative mt-10 w-full max-w-3xl">
+      <div className="relative w-fit max-w-full">
         <div className="mb-3 flex items-center justify-between">
           <span className="label !text-ally">Your team</span>
-          <span className="font-display text-sm font-semibold">
+          <span className="font-display text-sm font-semibold tabular-nums">
             {filled} / {q.fill ? MAX_PARTY : filled}
           </span>
         </div>
         <div className="flex flex-wrap justify-center gap-3">
-          {ours.map((g) => (
-            <GroupBox key={g.players[0].id} g={g} side="ally" />
+          {ours.map((p) => (
+            <PlayerTile key={p.id} p={p} mine={p.id === me.id} side="ally" stacked />
           ))}
           {Array.from({ length: openSlots }, (_, i) => (
-            <div key={i} className="flex w-28 flex-col items-center gap-2 rounded-xl border border-dashed border-white/12 p-3">
-              <span className="grid size-14 place-items-center rounded-[28%] bg-white/[0.03]">
-                <span className="size-5 animate-spin rounded-full border-2 border-ink-600 border-t-ally" />
+            <div key={i} className="relative flex w-28 animate-breathe flex-col items-center gap-2 rounded-[10px] p-3 text-neon">
+              <DashBorder />
+              <span className="grid size-14 place-items-center rounded-xl bg-white/[0.03]">
+                <span className="size-5 animate-spin rounded-full border-2 border-ink-600 border-t-neon" />
               </span>
-              <span className="text-xs text-ink-400">Searching…</span>
+              <span className="text-xs text-ink-300">Searching…</span>
             </div>
           ))}
         </div>
-        <p className="mt-4 text-xs text-ink-400">
-          {q.fill
-            ? 'Your party stays together. Open slots fill with other queued parties and solo players.'
-            : 'Fill off: your party size is locked. Waiting for an opponent, any size.'}
-        </p>
       </div>
 
-      <button onClick={onCancel} className="btn-ghost relative mt-auto px-8 py-2.5 pt-2.5">
+      <button onClick={onCancel} className="relative inline-flex items-center gap-2 rounded px-3 py-2 text-sm font-semibold text-ink-300 transition hover:text-foe">
         <Icon name="x" /> Cancel matchmaking
       </button>
     </section>
+    </Frame>
   )
 }
 
-function GroupBox({
-  g,
+function PlayerTile({
+  p,
+  mine,
   side,
   readyIds,
-  big,
   loadouts,
+  stacked,
 }: {
-  g: Group
+  p: QPlayer
+  mine?: boolean
   side: 'ally' | 'foe'
   readyIds?: Set<string>
-  big?: boolean
   loadouts?: Record<string, Loadout>
+  stacked?: boolean // searching screen: avatar with the name underneath
 }) {
-  const tone = side === 'ally' ? (g.mine ? 'border-gold/50 bg-gold/[0.05]' : 'border-ally/30 bg-ally/[0.04]') : 'border-foe/30 bg-foe/[0.04]'
-  const chip = side === 'ally' ? (g.mine ? 'text-gold' : 'text-ally') : 'text-foe'
-  return (
-    <div className={`animate-rise rounded-xl border p-3 ${tone}`}>
-      <p className={`mb-2 text-left font-display text-[10px] font-bold tracking-[0.2em] uppercase ${chip}`}>
-        {g.label} {g.players.length > 1 && <span className="text-ink-400">· {g.players.length}</span>}
-      </p>
-      <div className="flex gap-2">
-        {g.players.map((p) => (
-          <div key={p.id} className={`flex flex-col items-center gap-1.5 ${big ? 'w-24' : 'w-22'}`}>
-            <div className="relative">
-              <Avatar name={p.name} size={big ? 72 : 56} />
-              {readyIds && (
-                <span
-                  className={`absolute -right-1 -bottom-1 grid size-5 place-items-center rounded-full ring-2 ring-ink-850 transition ${
-                    readyIds.has(p.id) ? 'bg-online text-ink-950' : 'bg-ink-600'
-                  }`}
-                >
-                  {readyIds.has(p.id) ? <Icon name="check" className="size-3" /> : <span className="size-1.5 animate-pulse rounded-full bg-ink-300" />}
-                </span>
-              )}
-            </div>
-            <span className="w-full truncate text-center text-xs font-semibold">{p.name}</span>
-            {loadouts && (
-              <span className="flex w-full flex-col items-center gap-0.5 text-center text-[10px] text-ink-300">
-                {loadouts[p.id] ? (
-                  <>
-                    <ClassAvatar key={loadouts[p.id].class + loadouts[p.id].weapon} cls={loadouts[p.id].class} weapon={loadouts[p.id].weapon} side={side} size={44} />
-                    <span className={`w-full truncate font-display text-[11px] font-bold tracking-[0.14em] uppercase ${side === 'ally' ? 'text-ally' : 'text-foe'}`}>
-                      {BUILD[loadouts[p.id].class][loadouts[p.id].weapon]}
-                    </span>
-                    <span className="w-full truncate text-ink-400" title={`${CLASS_INFO[loadouts[p.id].class].name} · ${WEAPON_INFO[loadouts[p.id].weapon].name}`}>
-                      {CLASS_INFO[loadouts[p.id].class].short} · {WEAPON_INFO[loadouts[p.id].weapon].name}
-                    </span>
-                  </>
-                ) : side === 'foe' ? (
-                  <>
-                    <HiddenAvatar size={44} />
-                    <span className="text-ink-400">Hidden</span>
-                  </>
-                ) : (
-                  <span className="grid h-[44px] place-items-center text-ink-400">
-                    <span className="animate-pulse">Choosing…</span>
-                  </span>
-                )}
-              </span>
-            )}
-            {readyIds && (
-              <span className={`font-display text-[10px] font-bold tracking-widest ${readyIds.has(p.id) ? 'text-online' : 'text-ink-400'}`}>
-                {readyIds.has(p.id) ? 'READY ✓' : 'WAITING'}
-              </span>
-            )}
-          </div>
-        ))}
+  const isReady = !!readyIds?.has(p.id)
+  const loadout = loadouts?.[p.id]
+  const state = isReady ? 'ready' : !loadout && side === 'ally' ? 'choosing' : 'waiting' // enemy picks are hidden, so they only ever read ready or waiting
+  const tone = isReady
+    ? 'border-online/50 bg-online/[0.10]'
+    : side === 'foe'
+      ? 'border-foe/30 bg-foe/[0.05]'
+      : mine
+        ? 'border-ally/60 bg-ally/[0.12]'
+        : 'border-ally/25 bg-ally/[0.05]'
+  const accent = side === 'ally' ? 'text-ally' : 'text-foe'
+  if (stacked)
+    return (
+      <div className={`animate-rise flex w-28 flex-col items-center gap-2 rounded-[10px] border p-3 ${tone}`}>
+        <Avatar name={p.name} size={56} />
+        <span className="w-full truncate text-center text-xs font-semibold">{p.name}</span>
+        <span className="flex items-center gap-1 text-[11px] font-semibold text-online">
+          <Icon name="check" className="size-3" /> In queue
+        </span>
       </div>
+    )
+  return (
+    <div className={`animate-rise flex min-h-0 min-w-0 items-center gap-3 rounded-[10px] border px-3 py-1 transition-colors duration-150 ${tone}`}>
+      <Avatar name={p.name} size={40} />
+      <div className="flex min-w-0 flex-1 flex-col gap-1">
+        <span className="flex items-center gap-2 text-sm leading-none font-semibold">
+          {readyIds &&
+            (state === 'ready' ? (
+              <span role="img" aria-label="Ready" title="Ready" className="grid size-4 shrink-0 place-items-center rounded-full bg-online text-ink-950">
+                <Icon name="check" className="size-3" />
+              </span>
+            ) : state === 'choosing' ? (
+              <span role="img" aria-label="Choosing a loadout" title="Choosing a loadout" className="size-3.5 shrink-0 animate-spin rounded-full border-2 border-away border-t-transparent" />
+            ) : (
+              <span role="img" aria-label="Waiting to ready up" title="Waiting to ready up" className="size-3.5 shrink-0 rounded-full border-2 border-ink-400" />
+            ))}
+          <span className="truncate">{p.name}</span>
+        </span>
+        {loadouts &&
+          (loadout ? (
+            <span
+              className={`truncate font-display text-[11px] leading-none font-bold tracking-[0.14em] uppercase ${accent}`}
+              title={`${CLASS_INFO[loadout.class].name} · ${WEAPON_INFO[loadout.weapon].name}`}
+            >
+              {BUILD[loadout.class][loadout.weapon]}
+            </span>
+          ) : (
+            side === 'ally' && <span className="text-[11px] leading-none text-ink-100">Choosing…</span>
+          ))}
+      </div>
+      {loadouts &&
+        (loadout ? (
+          <ClassAvatar key={loadout.class + loadout.weapon} cls={loadout.class} weapon={loadout.weapon} side={side} size={40} />
+        ) : null)}
     </div>
   )
 }
@@ -219,6 +229,82 @@ function rememberBuild(l: Loadout) {
 const revealed = new Set<string>() // "Match found" is a short client-side reveal, shown once per match (the server has no such step)
 
 const lobbyClock = (secs: number) => `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`
+
+// Ready and Decline share one fixed size: shrink-0 keeps them equal (and unchanging) when the footer is tight or the label changes.
+const FOOTER_BTN = 'shrink-0 whitespace-nowrap px-0 transition duration-150'
+
+/** Press-and-hold timer: `holding` is true while held, and `onConfirm` fires once the hold lasts `ms`. Releasing early cancels. */
+function useHold(ms: number, onConfirm: () => void) {
+  const [holding, setHolding] = useState(false)
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const confirm = useRef(onConfirm)
+  useLayoutEffect(() => {
+    confirm.current = onConfirm
+  })
+  useEffect(() => () => clearTimeout(timer.current), [])
+  const stop = () => {
+    clearTimeout(timer.current)
+    setHolding(false)
+  }
+  const start = () => {
+    clearTimeout(timer.current)
+    setHolding(true)
+    timer.current = setTimeout(() => {
+      setHolding(false)
+      confirm.current()
+    }, ms)
+  }
+  return { holding, start, stop, ms }
+}
+
+/** A button that acts only after being held (pointer, or Enter/Space), so a stray click can't trigger it. */
+function HoldButton({
+  hold,
+  label,
+  className,
+  fillClass,
+  disabled,
+  children,
+}: {
+  hold: ReturnType<typeof useHold>
+  label: string
+  className: string
+  fillClass: string
+  disabled?: boolean
+  children: ReactNode
+}) {
+  const { holding, start, stop, ms } = hold
+  const isHoldKey = (e: React.KeyboardEvent) => e.key === 'Enter' || e.key === ' '
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title="Press and hold"
+      disabled={disabled}
+      onPointerDown={start}
+      onPointerUp={stop}
+      onPointerLeave={stop}
+      onPointerCancel={stop}
+      onBlur={stop}
+      onKeyDown={(e) => {
+        if (isHoldKey(e) && !e.repeat) {
+          e.preventDefault()
+          start()
+        }
+      }}
+      onKeyUp={(e) => isHoldKey(e) && stop()}
+      onContextMenu={(e) => e.preventDefault()}
+      className={`btn relative touch-none overflow-hidden select-none ${className}`}
+    >
+      <span
+        aria-hidden
+        className={`absolute inset-0 origin-left ${fillClass}`}
+        style={{ transform: `scaleX(${holding ? 1 : 0})`, transition: `transform ${holding ? ms : 150}ms ${holding ? 'linear' : 'ease-out'}` }}
+      />
+      <span className="relative flex items-center justify-center gap-2">{children}</span>
+    </button>
+  )
+}
 
 function Lobby({
   match,
@@ -276,25 +362,55 @@ function Lobby({
   const left = counting ? Math.max(0, Math.ceil((Date.parse(match.countdown_ends_at!) - now) / 1000)) : 0
   const closesIn = match.lobby_ends_at && match.status === 'FOUND' ? Math.max(0, Math.ceil((Date.parse(match.lobby_ends_at) - now) / 1000)) : null
 
-  const letters = { next: 0 }
-  const ours = groupsOf(match.teams[match.my_team], me.id, letters)
-  const theirs = groupsOf(match.teams[1 - match.my_team], me.id, letters)
+  const ours = playersOf(match.teams[match.my_team], me.id)
+  const theirs = playersOf(match.teams[1 - match.my_team], me.id)
   const readyIds = new Set(match.ready)
   const total = match.teams.reduce((n, t) => n + t.players.length, 0)
   const ready = readyIds.size
   const allReady = ready >= total
+  const canReady = !iAmReady && confirmed
+  const readyHold = useHold(600, () => onReady(match.match_id))
+  const declineHold = useHold(800, () => onLeave(match.match_id))
+  const rRef = useRef({ canReady, readyHold, declineHold, iAmReady })
+  useLayoutEffect(() => {
+    rRef.current = { canReady, readyHold, declineHold, iAmReady }
+  })
+  useEffect(() => {
+    const isR = (e: KeyboardEvent) => e.key === 'r' || e.key === 'R'
+    const isD = (e: KeyboardEvent) => e.key === 'd' || e.key === 'D'
+    const down = (e: KeyboardEvent) => {
+      if (e.repeat || e.ctrlKey || e.metaKey || e.altKey || (e.target as HTMLElement)?.tagName === 'INPUT') return
+      if (isR(e) && rRef.current.canReady) rRef.current.readyHold.start()
+      else if (isD(e) && !rRef.current.iAmReady) rRef.current.declineHold.start()
+    }
+    const up = (e: KeyboardEvent) => {
+      if (isR(e)) rRef.current.readyHold.stop()
+      else if (isD(e)) rRef.current.declineHold.stop()
+    }
+    const cancel = () => {
+      rRef.current.readyHold.stop()
+      rRef.current.declineHold.stop()
+    }
+    window.addEventListener('keydown', down)
+    window.addEventListener('keyup', up)
+    window.addEventListener('blur', cancel)
+    return () => {
+      window.removeEventListener('keydown', down)
+      window.removeEventListener('keyup', up)
+      window.removeEventListener('blur', cancel)
+    }
+  }, [])
 
-  const team = (side: 'ally' | 'foe', groups: Group[]) => (
-    <div className={`flex-1 ${side === 'foe' ? 'lg:text-right' : ''}`}>
-      <div className={`mb-4 flex items-baseline gap-3 ${side === 'foe' ? 'lg:justify-end' : ''}`}>
-        <h2 className={`font-display text-xl font-bold tracking-wider uppercase ${side === 'ally' ? 'text-ally' : 'text-foe'}`}>
-          {side === 'ally' ? 'Your team' : 'Opponent team'}
-        </h2>
-        <span className="text-sm text-ink-400">{groups.reduce((n, g) => n + g.players.length, 0)} players</span>
-      </div>
-      <div className={`flex flex-wrap gap-3 ${side === 'foe' ? 'lg:justify-end' : ''}`}>
-        {groups.map((g) => (
-          <GroupBox key={g.players[0].id} g={g} side={side} readyIds={readyIds} big loadouts={match.loadouts} />
+  const team = (side: 'ally' | 'foe', list: QPlayer[]) => (
+    <div
+      className={`flex min-h-0 flex-col gap-3 rounded-[10px] border border-neon/25 bg-gradient-to-b from-white/[0.04] to-white/[0.01] p-3 wide:row-start-1 ${side === 'ally' ? 'wide:col-start-1' : 'wide:col-start-3'}`}
+    >
+      <h2 className={`font-display text-base font-bold tracking-wider uppercase ${side === 'ally' ? 'text-ally' : 'text-foe'}`}>
+        {side === 'ally' ? 'Your team' : 'Opponents'}
+      </h2>
+      <div className="grid min-h-0 flex-1 auto-rows-fr gap-2 sm:grid-cols-2 wide:grid-cols-1">
+        {list.map((p) => (
+          <PlayerTile key={p.id} p={p} mine={p.id === me.id} side={side} readyIds={readyIds} loadouts={match.loadouts} />
         ))}
       </div>
     </div>
@@ -302,93 +418,125 @@ function Lobby({
 
   if (reveal)
     return (
-      <section className="panel relative grid min-h-[calc(100vh-8rem)] place-items-center overflow-hidden px-4 py-10 text-center" aria-live="assertive">
-        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_50%_50%,rgb(245_184_61/0.16),transparent_60%)]" />
+      <Frame cut={28} glow>
+      <section className="relative grid min-h-[calc(100vh-8rem)] place-items-center px-4 py-10 text-center" aria-live="assertive">
+      {['top-3 left-3 border-t-2 border-l-2', 'bottom-3 left-3 border-b-2 border-l-2', 'bottom-3 right-3 border-b-2 border-r-2'].map((c) => (
+        <span key={c} aria-hidden className={`pointer-events-none absolute size-5 border-neon/70 ${c}`} />
+      ))}
+
+        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_50%_50%,color-mix(in_srgb,var(--color-gold)_16%,transparent),transparent_60%)]" />
         <div className="relative animate-rise">
           <p className="label">{modeLabel(match.mode)} · 4v4 · EU West</p>
-          <h1 className="mt-2 font-display text-6xl font-bold tracking-[0.12em] text-gold uppercase [text-shadow:0_0_40px_rgb(245_184_61/0.35)] sm:text-7xl">Match found</h1>
+          <h1 className="mt-2 font-display text-6xl font-bold tracking-[0.12em] text-gold uppercase [text-shadow:0_0_40px_color-mix(in_srgb,var(--color-gold)_35%,transparent)] sm:text-7xl">Match found</h1>
           <div className="mx-auto mt-4 h-px w-64 bg-gradient-to-r from-transparent via-gold/60 to-transparent" />
         </div>
       </section>
+      </Frame>
     )
 
+  const urgent = closesIn !== null && closesIn <= 10
   return (
-    <section className="panel relative flex min-h-[calc(100vh-8rem)] flex-col justify-center overflow-hidden px-4 py-8 sm:px-8" aria-live="polite">
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_20%_50%,rgb(76_201_240/0.10),transparent_50%),radial-gradient(ellipse_at_80%_50%,rgb(240_80_110/0.10),transparent_50%)]" />
-      <div className="relative animate-rise text-center">
-        <p className="label">{modeLabel(match.mode)} · 4v4 · EU West</p>
-        <h1 className="mt-2 font-display text-4xl font-bold tracking-[0.12em] text-gold uppercase [text-shadow:0_0_40px_rgb(245_184_61/0.35)] sm:text-5xl">Match lobby</h1>
-        {closesIn !== null && (
-          <p className={`mt-2 font-display text-sm font-bold tracking-[0.2em] uppercase ${closesIn <= 10 ? 'text-foe' : 'text-ink-300'}`}>Lobby closes in {lobbyClock(closesIn)}</p>
-        )}
-      </div>
+    <Frame cut={28} glow className="wide:h-[calc(100dvh-7.25rem)] wide:min-h-[560px]">
+    <section className="relative flex h-full flex-col gap-3 p-4" aria-live="polite">
+      {['top-3 left-3 border-t-2 border-l-2', 'bottom-3 left-3 border-b-2 border-l-2', 'bottom-3 right-3 border-b-2 border-r-2'].map((c) => (
+        <span key={c} aria-hidden className={`pointer-events-none absolute size-5 border-neon/70 ${c}`} />
+      ))}
 
-      <div className="relative mt-8 flex flex-col items-stretch gap-8 lg:flex-row lg:items-start">
-        {team('ally', ours)}
-        <div className="grid place-items-center lg:pt-10">
-          <span className="grid size-14 place-items-center rounded-full border border-white/10 bg-ink-900 font-display text-lg font-bold text-ink-300">VS</span>
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_15%_50%,color-mix(in_srgb,var(--color-ally)_8%,transparent),transparent_50%),radial-gradient(ellipse_at_85%_50%,color-mix(in_srgb,var(--color-foe)_8%,transparent),transparent_50%)]" />
+
+      <div className="relative grid items-center justify-items-center gap-3 sm:grid-cols-[1fr_auto_1fr] sm:justify-items-stretch sm:gap-4">
+        <h1 className="max-sm:sr-only flex items-center gap-3 font-display text-xl font-bold tracking-[0.12em] text-ink-100 uppercase [text-shadow:0_0_24px_color-mix(in_srgb,var(--color-neon)_30%,transparent)]">
+          <span aria-hidden className="h-5 w-1 rounded-full bg-gold" />
+          Match lobby
+        </h1>
+        <div
+          role="status"
+          className={`relative flex items-center gap-3 overflow-hidden rounded-full border px-4 py-2 whitespace-nowrap sm:justify-self-center font-display font-bold tabular-nums transition-colors duration-150 ${
+            urgent ? 'border-foe/60 bg-foe/10' : 'border-neon/40 bg-neon/10'
+          }`}
+        >
+          {closesIn !== null && (
+            <>
+              <span className="sr-only">Lobby closes in</span>
+              <span className={`text-lg tracking-widest ${urgent ? 'animate-pulse text-foe' : 'text-ink-100'}`}>{lobbyClock(closesIn)}</span>
+              <span className="h-4 w-px bg-white/20" aria-hidden />
+            </>
+          )}
+          <span className="text-sm tracking-[0.12em] text-ink-100 uppercase">
+            {ready} / {total} ready
+          </span>
+          <span className="absolute inset-x-0 bottom-0 h-0.5 bg-white/10" aria-hidden>
+            <span className="block h-full bg-gold transition-[width] duration-150" style={{ width: `${(ready / total) * 100}%` }} />
+          </span>
         </div>
-        {team('foe', theirs)}
+        <p className="label hidden justify-self-end sm:block">{modeLabel(match.mode)} · 4v4 · EU West</p>
       </div>
 
-      <div className="relative mt-8">
+      {closesIn !== null && (
+        <p className={`relative text-center text-xs ${urgent ? 'font-semibold text-foe' : 'text-ink-300'}`}>
+          The lobby is cancelled at 0:00 if not everyone is ready.
+        </p>
+      )}
+
+      <div className="relative flex min-h-0 flex-1 flex-col gap-3 wide:grid wide:grid-cols-[264px_minmax(0,1fr)_264px] wide:grid-rows-[minmax(0,1fr)_auto]">
+        {team('ally', ours)}
         <Armory
           cls={draft.class}
           weapon={draft.weapon}
           locked={locked}
-          canReady={!iAmReady && confirmed}
           onPick={choose}
-          onReady={() => onReady(match.match_id)}
-          restored={!!last && draft.class === last.class && draft.weapon === last.weapon}
         />
+        {team('foe', theirs)}
       </div>
 
-      <div className="relative mt-8 flex flex-col items-center gap-3">
+      <div className="relative flex flex-wrap items-center justify-between gap-3" aria-live="assertive">
         {allReady ? (
-          <div className="flex flex-col items-center gap-2" aria-live="assertive">
+          <>
             <p className="font-display text-sm font-bold tracking-[0.25em] text-online uppercase">All players ready</p>
             {left > 0 ? (
-              <span key={left} className="animate-rise font-display text-7xl font-bold text-gold tabular-nums [text-shadow:0_0_40px_rgb(245_184_61/0.5)]">
-                {left}
-              </span>
+              <span key={left} className="animate-rise font-display text-4xl font-bold text-gold tabular-nums">{left}</span>
             ) : (
-              <p className="font-display text-2xl font-bold tracking-[0.2em] text-gold uppercase">Match starting</p>
+              <p className="font-display text-xl font-bold tracking-[0.2em] text-gold uppercase">Match starting</p>
             )}
-          </div>
+          </>
         ) : (
           <>
-            <p className="font-display text-2xl font-bold tabular-nums">{ready} / {total} READY</p>
-            <p className="text-sm text-ink-300">
-              {iAmReady
-                ? `Locked in. Waiting for ${total - ready} player${total - ready === 1 ? '' : 's'}…`
-                : !draft.class || !draft.weapon
-                  ? 'Pick a class and a weapon to ready up.'
-                  : confirmed
-                    ? 'Loadout saved. Ready up when you are set.'
-                    : 'Saving your loadout…'}
-            </p>
-            <div className="h-1 w-64 overflow-hidden rounded bg-white/5">
-              <div className="h-full bg-online transition-all" style={{ width: `${(ready / total) * 100}%` }} />
+            <div className="flex w-full flex-col items-center gap-2">
+            <div className="flex w-full flex-col-reverse items-center justify-center gap-3 sm:flex-row sm:gap-12">
+              {!iAmReady && (
+                <HoldButton
+                  hold={declineHold}
+                  label="Hold to decline the match and leave the lobby"
+                  fillClass="bg-foe/30"
+                  className={`${FOOTER_BTN} h-11 w-full max-w-60 sm:w-60 rounded-lg border border-foe/60 bg-transparent font-display text-xs font-bold tracking-[0.1em] text-foe uppercase hover:bg-foe/10`}
+                >
+                  <Icon name="x" /> Hold to decline
+                  <kbd className="ml-1 rounded border border-foe/50 px-1 font-display text-[10px]">D</kbd>
+                </HoldButton>
+              )}
+              <HoldButton
+                hold={readyHold}
+                label="Hold to ready up"
+                disabled={!canReady}
+                fillClass={iAmReady ? 'bg-online/25' : 'bg-ink-950/40'}
+                className={`${FOOTER_BTN} h-14 w-full max-w-64 sm:w-64 font-display text-lg tracking-[0.1em] uppercase ${
+                  iAmReady
+                    ? 'btn-ghost !border-online/50 !text-online disabled:opacity-100'
+                    : 'btn-gold shadow-[0_0_0_1px_color-mix(in_srgb,var(--color-gold-soft)_50%,transparent),0_0_28px_color-mix(in_srgb,var(--color-gold)_50%,transparent)] enabled:hover:shadow-[0_0_0_1px_color-mix(in_srgb,var(--color-gold-soft)_70%,transparent),0_0_36px_color-mix(in_srgb,var(--color-gold)_70%,transparent)] disabled:shadow-none disabled:opacity-40'
+                }`}
+              >
+                {iAmReady ? <Icon name="check" /> : null} {iAmReady ? 'Locked in' : 'Hold to ready'}
+                {!iAmReady && <kbd className="ml-1 rounded border border-ink-950/30 px-1 font-display text-[10px]">R</kbd>}
+              </HoldButton>
             </div>
-            <div className="mt-2 grid w-full max-w-md grid-cols-2 gap-3">
-              <button
-                onClick={() => onReady(match.match_id)}
-                disabled={iAmReady || !confirmed}
-                className={`py-3.5 text-base ${iAmReady ? 'btn-ghost font-display tracking-[0.12em] uppercase !border-online/50 !text-online disabled:opacity-100' : `btn-gold disabled:opacity-40 ${confirmed ? 'animate-glow' : ''}`}`}
-              >
-                {iAmReady ? <Icon name="check" /> : null} {iAmReady ? 'Locked in' : 'Ready'}
-                {!iAmReady && confirmed && <kbd className="ml-1 rounded border border-ink-950/30 px-1 font-display text-[10px]">R</kbd>}
-              </button>
-              <button
-                onClick={() => onLeave(match.match_id)}
-                className="btn-ghost py-3.5 font-display text-base tracking-[0.12em] uppercase hover:border-foe/50 hover:bg-foe/10 hover:text-foe"
-              >
-                <Icon name="x" /> Decline
-              </button>
+            {!iAmReady && !confirmed && (
+              <p className="text-sm text-ink-300">{!draft.class || !draft.weapon ? 'Pick a class and a weapon to ready up.' : 'Saving your loadout…'}</p>
+            )}
             </div>
           </>
         )}
       </div>
     </section>
+    </Frame>
   )
 }
