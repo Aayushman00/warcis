@@ -390,9 +390,9 @@ function ModeCard() {
 export function Home(c: Ctx) {
   return (
     <div className="stagger space-y-6 pb-10">
-      <Frame cut={28} glow className="min-h-[26rem]">
+      <Frame cut={28} glow className="min-h-[26rem] [@media(max-height:520px)]:min-h-0">
         <WorldArt className="absolute inset-0 h-full w-full [mask-image:linear-gradient(to_right,transparent_20%,black_75%)]" />
-        <div className="relative grid min-h-[26rem] items-center gap-8 p-8 pt-12 sm:p-10 sm:pt-14 lg:grid-cols-[1fr_24rem]">
+        <div className="relative grid min-h-[26rem] [@media(max-height:520px)]:min-h-0 items-center gap-8 p-8 pt-12 [@media(max-height:520px)]:py-6 sm:p-10 sm:pt-14 lg:grid-cols-[1fr_24rem]">
           <div className="max-w-xl">
             <h1 className="font-display text-3xl leading-[1.05] font-bold text-white [text-shadow:0_2px_18px_rgb(0_0_0/0.7)] sm:text-5xl">
               Squad up.

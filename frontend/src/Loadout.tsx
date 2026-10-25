@@ -68,7 +68,7 @@ function HeroStage({ cls, weapon, locked, children }: { cls: ClassId | undefined
     drawAvatar(ctx, cls, pal, BASE_R, 1, 0)
   })
   return (
-    <div className="relative min-h-[240px] flex-1 overflow-hidden rounded-[10px] border border-neon/25 bg-ink-850 lg:col-start-2 lg:row-start-1">
+    <div className="relative min-h-[470px] flex-1 sm:min-h-[360px] lg:min-h-[240px] overflow-hidden rounded-[10px] border border-neon/25 bg-ink-850 lg:col-start-2 lg:row-start-1">
       <div aria-hidden className="pointer-events-none absolute inset-0 animate-breathe bg-[radial-gradient(circle_at_50%_46%,color-mix(in_srgb,var(--color-ally)_30%,transparent),color-mix(in_srgb,var(--color-ally)_8%,transparent)_38%,transparent_62%)]" />
       <canvas
         ref={ref}
@@ -96,12 +96,12 @@ export function Pips({ value, of = 5, tone = 'bg-ally' }: { value: number; of?: 
 /** Segmented stat row: same pips as the pick cards, "n / 5", which pick it comes from, and a hover diff (+2 green / -1 red). */
 function StatBar({ label, value, from, diff = 0 }: { label: string; value: Rating | 0; from: 'Class' | 'Weapon'; diff?: number }) {
   return (
-    <div className="grid grid-cols-[72px_auto_36px_52px_auto] items-center gap-2">
+    <div className="grid grid-cols-[72px_auto_36px] items-center gap-2 sm:grid-cols-[72px_auto_36px_52px_auto]">
       <span className="font-display text-[11px] font-semibold tracking-[0.16em] text-ink-100 uppercase">{label}</span>
       <Pips value={value} />
       <span className="text-right font-display text-xs font-bold text-ink-100 tabular-nums">{value ? `${value} / 5` : '–'}</span>
-      <span className="text-[10px] font-semibold tracking-wider text-ink-300 uppercase">{from}</span>
-      <span className={`min-w-24 whitespace-nowrap font-display text-xs font-bold tabular-nums ${diff > 0 ? 'text-online' : 'text-foe'}`} aria-live="polite">
+      <span className="hidden text-[10px] font-semibold tracking-wider text-ink-300 uppercase sm:block">{from}</span>
+      <span className={`hidden min-w-24 whitespace-nowrap sm:block font-display text-xs font-bold tabular-nums ${diff > 0 ? 'text-online' : 'text-foe'}`} aria-live="polite">
         {diff ? `${diff > 0 ? '+' : '−'}${Math.abs(diff)} ${label}` : ''}
       </span>
     </div>
@@ -188,7 +188,7 @@ function PickCard({
       disabled={locked}
       aria-pressed={on}
       aria-keyshortcuts={k}
-      className={`relative flex h-full flex-col rounded-[10px] border p-3 text-left transition duration-150 focus-visible:ring-2 focus-visible:ring-gold/70 focus-visible:outline-none disabled:cursor-not-allowed ${
+      className={`relative flex h-full min-w-0 flex-col rounded-[10px] border p-2 text-left sm:p-3 transition duration-150 focus-visible:ring-2 focus-visible:ring-gold/70 focus-visible:outline-none disabled:cursor-not-allowed ${
         on
           ? 'border-gold bg-gradient-to-b from-gold/[0.18] to-gold/[0.05] shadow-[0_0_0_1px_color-mix(in_srgb,var(--color-gold)_55%,transparent),0_0_24px_color-mix(in_srgb,var(--color-gold)_35%,transparent)]'
           : 'border-neon/25 bg-gradient-to-b from-white/[0.05] to-white/[0.02] enabled:hover:border-neon/70 enabled:hover:from-white/[0.08]'
@@ -203,9 +203,9 @@ function PickCard({
         {visual}
         <Key k={k} />
       </span>
-      <span className="mt-2 block truncate font-display text-sm leading-4 font-bold tracking-wider uppercase">{title}</span>
-      <span className={`block h-4 truncate text-[11px] leading-4 ${on ? 'text-gold' : 'text-ink-100/80'}`}>{subtitle}</span>
-      <span className="mt-2 grid grid-cols-[auto_1fr] items-center gap-x-2 gap-y-1 text-[11px] text-ink-100/80">{children}</span>
+      <span className="mt-2 block font-display text-xs leading-4 font-bold uppercase sm:truncate sm:text-sm sm:tracking-wider">{title}</span>
+      <span className={`hidden h-4 truncate text-[11px] sm:block leading-4 ${on ? 'text-gold' : 'text-ink-100/80'}`}>{subtitle}</span>
+      <span className="mt-2 hidden grid-cols-[auto_1fr] sm:grid items-center gap-x-2 gap-y-1 text-[11px] text-ink-100/80">{children}</span>
     </button>
   )
 }
@@ -319,7 +319,7 @@ export function Armory({
             </span>
           </div>
         )}
-        <div className="pointer-events-none absolute inset-x-0 bottom-0 grid grid-cols-[1fr_auto] items-stretch gap-4 bg-gradient-to-t from-ink-950/95 via-ink-950/70 to-transparent p-4 pt-6">
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 grid grid-cols-1 items-stretch sm:grid-cols-[1fr_auto] gap-4 bg-gradient-to-t from-ink-950/95 via-ink-950/70 to-transparent p-4 pt-6">
           <div className="grid gap-1">
             <StatBar label="Health" value={c?.health ?? 0} from="Class" diff={dHealth} />
             <StatBar label="Damage" value={w?.damage ?? 0} from="Weapon" diff={dDamage} />
@@ -327,7 +327,7 @@ export function Armory({
             <StatBar label="Range" value={w?.range ?? 0} from="Weapon" diff={dRange} />
           </div>
           {c ? (
-            <div className="flex max-w-[260px] items-center gap-2 rounded-[10px] border border-neon/25 bg-white/[0.04] px-3">
+            <div className="flex items-center gap-2 py-2 sm:max-w-[260px] sm:py-0 rounded-[10px] border border-neon/25 bg-white/[0.04] px-3">
               <span className="grid size-6 shrink-0 place-items-center rounded-md border border-white/25 bg-ink-950 font-display text-xs font-bold text-ink-100">Q</span>
               <span className="text-xs leading-snug text-ink-100/80">
                 <b className="font-display tracking-wider text-ink-100 uppercase">{c.qName}</b>

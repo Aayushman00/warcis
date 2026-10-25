@@ -250,7 +250,7 @@ function Launcher({ me, setMe }: { me: Player; setMe: (p: Player | null) => void
   return (
     <div className="flex min-h-full flex-col">
       <header className="sticky top-0 z-30 border-b border-white/[0.06] bg-ink-900/85 backdrop-blur">
-        <div className="mx-auto flex h-16 max-w-[1440px] items-center gap-4 px-4 lg:px-6">
+        <div className="mx-auto flex h-16 [@media(max-height:520px)]:h-12 max-w-[1440px] items-center gap-4 px-4 lg:px-6">
           <Logo className="shrink-0 max-sm:[&>span]:hidden" />
           <nav className="ml-2 flex gap-1" aria-label="Main">
             {nav.map((n) => (

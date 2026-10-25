@@ -408,7 +408,7 @@ function Lobby({
       <h2 className={`font-display text-base font-bold tracking-wider uppercase ${side === 'ally' ? 'text-ally' : 'text-foe'}`}>
         {side === 'ally' ? 'Your team' : 'Opponents'}
       </h2>
-      <div className="grid min-h-0 flex-1 auto-rows-fr gap-2">
+      <div className="grid min-h-0 flex-1 auto-rows-fr gap-2 sm:grid-cols-2 lg:grid-cols-1">
         {list.map((p) => (
           <PlayerTile key={p.id} p={p} mine={p.id === me.id} side={side} readyIds={readyIds} loadouts={match.loadouts} />
         ))}
@@ -444,14 +444,14 @@ function Lobby({
 
       <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_15%_50%,color-mix(in_srgb,var(--color-ally)_8%,transparent),transparent_50%),radial-gradient(ellipse_at_85%_50%,color-mix(in_srgb,var(--color-foe)_8%,transparent),transparent_50%)]" />
 
-      <div className="relative grid grid-cols-[1fr_auto_1fr] items-center gap-4">
-        <h1 className="flex items-center gap-3 font-display text-xl font-bold tracking-[0.12em] text-ink-100 uppercase [text-shadow:0_0_24px_color-mix(in_srgb,var(--color-neon)_30%,transparent)]">
+      <div className="relative grid items-center justify-items-center gap-3 sm:grid-cols-[1fr_auto_1fr] sm:justify-items-stretch sm:gap-4">
+        <h1 className="max-sm:sr-only flex items-center gap-3 font-display text-xl font-bold tracking-[0.12em] text-ink-100 uppercase [text-shadow:0_0_24px_color-mix(in_srgb,var(--color-neon)_30%,transparent)]">
           <span aria-hidden className="h-5 w-1 rounded-full bg-gold" />
           Match lobby
         </h1>
         <div
           role="status"
-          className={`relative flex items-center gap-3 overflow-hidden rounded-full border px-4 py-2 font-display font-bold tabular-nums transition-colors duration-150 ${
+          className={`relative flex items-center gap-3 overflow-hidden rounded-full border px-4 py-2 whitespace-nowrap sm:justify-self-center font-display font-bold tabular-nums transition-colors duration-150 ${
             urgent ? 'border-foe/60 bg-foe/10' : 'border-neon/40 bg-neon/10'
           }`}
         >
@@ -469,7 +469,7 @@ function Lobby({
             <span className="block h-full bg-gold transition-[width] duration-150" style={{ width: `${(ready / total) * 100}%` }} />
           </span>
         </div>
-        <p className="label justify-self-end">{modeLabel(match.mode)} · 4v4 · EU West</p>
+        <p className="label hidden justify-self-end sm:block">{modeLabel(match.mode)} · 4v4 · EU West</p>
       </div>
 
       {closesIn !== null && (
@@ -502,13 +502,13 @@ function Lobby({
         ) : (
           <>
             <div className="flex w-full flex-col items-center gap-2">
-            <div className="flex items-center justify-center gap-12">
+            <div className="flex w-full flex-col-reverse items-center justify-center gap-3 sm:flex-row sm:gap-12">
               {!iAmReady && (
                 <HoldButton
                   hold={declineHold}
                   label="Hold to decline the match and leave the lobby"
                   fillClass="bg-foe/30"
-                  className={`${FOOTER_BTN} h-11 w-60 rounded-lg border border-foe/60 bg-transparent font-display text-xs font-bold tracking-[0.1em] text-foe uppercase hover:bg-foe/10`}
+                  className={`${FOOTER_BTN} h-11 w-full max-w-60 sm:w-60 rounded-lg border border-foe/60 bg-transparent font-display text-xs font-bold tracking-[0.1em] text-foe uppercase hover:bg-foe/10`}
                 >
                   <Icon name="x" /> Hold to decline
                   <kbd className="ml-1 rounded border border-foe/50 px-1 font-display text-[10px]">D</kbd>
@@ -519,7 +519,7 @@ function Lobby({
                 label="Hold to ready up"
                 disabled={!canReady}
                 fillClass={iAmReady ? 'bg-online/25' : 'bg-ink-950/40'}
-                className={`${FOOTER_BTN} h-14 w-64 font-display text-lg tracking-[0.1em] uppercase ${
+                className={`${FOOTER_BTN} h-14 w-full max-w-64 sm:w-64 font-display text-lg tracking-[0.1em] uppercase ${
                   iAmReady
                     ? 'btn-ghost !border-online/50 !text-online disabled:opacity-100'
                     : 'btn-gold shadow-[0_0_0_1px_color-mix(in_srgb,var(--color-gold-soft)_50%,transparent),0_0_28px_color-mix(in_srgb,var(--color-gold)_50%,transparent)] enabled:hover:shadow-[0_0_0_1px_color-mix(in_srgb,var(--color-gold-soft)_70%,transparent),0_0_36px_color-mix(in_srgb,var(--color-gold)_70%,transparent)] disabled:shadow-none disabled:opacity-40'

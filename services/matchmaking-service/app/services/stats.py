@@ -91,7 +91,7 @@ def history_item(m: dict, user_id: str) -> dict:
 
 async def history(user_id: str, limit: int, before: str | None) -> dict:
     """Newest-first finished matches of one player, keyset-paged on `created_at`."""
-    q: dict = {"player_ids": user_id, "result": {"$exists": True}}
+    q: dict = {"player_ids": user_id, "result.players": {"$exists": True}}  # skips legacy results that predate per-player scoreboards
     if before:
         try:
             q["created_at"] = {"$lt": datetime.fromisoformat(before)}
