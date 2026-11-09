@@ -263,6 +263,18 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
   const touchApi = useRef<TouchApi | null>(null)
   const skillEl = useRef<HTMLButtonElement>(null)
 
+  // Phones: the match starts on a server timer, not a tap, and browsers only grant full screen + orientation lock
+  // inside a gesture. So the first finger-lift in the match (pointerup is the touch gesture event) does it.
+  useEffect(() => {
+    const sync = () => setFullscreen(!!document.fullscreenElement)
+    document.addEventListener('fullscreenchange', sync)
+    if (touch && 'requestFullscreen' in document.documentElement) window.addEventListener('pointerup', enterFullscreen, { once: true, capture: true })
+    return () => {
+      document.removeEventListener('fullscreenchange', sync)
+      window.removeEventListener('pointerup', enterFullscreen, { capture: true })
+    }
+  }, [touch])
+
   useEffect(() => {
     unlockAudio() // the player just clicked "Enter match", so audio is allowed
     const proto = location.protocol === 'https:' ? 'wss' : 'ws'
@@ -872,7 +884,7 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
                 <BoardIcon />
               </button>
               {'requestFullscreen' in document.documentElement && (
-                <button className="g-icon-btn" onClick={() => toggleFullscreen().then(() => setFullscreen(!!document.fullscreenElement))} aria-label={fullscreen ? 'Exit full screen' : 'Full screen'}>
+                <button className="g-icon-btn" onClick={() => void toggleFullscreen()} aria-label={fullscreen ? 'Exit full screen' : 'Full screen'}>
                   <FullscreenIcon />
                 </button>
               )}
@@ -889,13 +901,17 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
   )
 }
 
-/** Full screen + landscape lock where the browser allows it (Android Chrome); a no-op elsewhere. */
-async function toggleFullscreen() {
+/** Full screen + landscape lock where the browser allows it (Android Chrome); a no-op elsewhere. Needs a user gesture. */
+async function enterFullscreen() {
   try {
-    if (document.fullscreenElement) return void (await document.exitFullscreen())
-    await document.documentElement.requestFullscreen()
+    if (!document.fullscreenElement) await document.documentElement.requestFullscreen()
     await (screen.orientation as ScreenOrientation & { lock?: (o: string) => Promise<void> }).lock?.('landscape')
   } catch {
-    /* denied or unsupported: playing windowed is fine */
+    /* denied or unsupported (iPhone): playing windowed is fine */
   }
+}
+
+async function toggleFullscreen() {
+  if (!document.fullscreenElement) return enterFullscreen()
+  await document.exitFullscreen().catch(() => {})
 }
