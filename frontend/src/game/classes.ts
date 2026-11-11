@@ -81,11 +81,36 @@ function hexPath(ctx: CanvasRenderingContext2D, rad: number, x = 0) {
   ctx.closePath()
 }
 
-/** A lit shape: soft bloom in the team's light color, so visors and cores read as emissive. */
-function glow(ctx: CanvasRenderingContext2D, col: string, blur: number, draw: () => void) {
+const blooms = new Map<string, HTMLCanvasElement>()
+
+/** Soft round light in `col` (6-digit hex), stretched to an rx by ry ellipse around (x, y). The sprite is painted once
+ *  per color: canvas shadowBlur re-blurs on every draw and cost ~3 ms a frame at 6x CPU slowdown. */
+export function bloom(ctx: CanvasRenderingContext2D, col: string, x: number, y: number, rx: number, ry = rx) {
+  let s = blooms.get(col)
+  if (!s) {
+    s = document.createElement('canvas')
+    s.width = s.height = 64
+    const g = s.getContext('2d')!
+    const grad = g.createRadialGradient(32, 32, 0, 32, 32, 32)
+    grad.addColorStop(0, col + 'cc')
+    grad.addColorStop(0.4, col + '55')
+    grad.addColorStop(1, col + '00')
+    g.fillStyle = grad
+    g.fillRect(0, 0, 64, 64)
+    blooms.set(col, s)
+  }
+  ctx.drawImage(s, x - rx, y - ry, rx * 2, ry * 2)
+}
+
+/** A lit shape: soft bloom in the team's light color, so visors and cores read as emissive. `area` = [x, y, rx, ry]
+ *  of the lit shape; with `fast` (the arena) the blur is a cached bloom sprite there instead of shadowBlur. */
+function glow(ctx: CanvasRenderingContext2D, col: string, blur: number, fast: boolean, area: [number, number, number, number], draw: () => void) {
   ctx.save()
-  ctx.shadowColor = col
-  ctx.shadowBlur = blur
+  if (fast) bloom(ctx, col, area[0], area[1], area[2] + blur, area[3] + blur)
+  else {
+    ctx.shadowColor = col
+    ctx.shadowBlur = blur
+  }
   draw()
   ctx.restore()
 }
@@ -95,7 +120,7 @@ function glow(ctx: CanvasRenderingContext2D, col: string, blur: number, draw: ()
  * the class shows in the silhouette and in its lit details. `t` (ms) drives the idle animation: thruster flicker,
  * shield shimmer, the cloak's eye pulse. Respects the caller's globalAlpha (dead / invisible / offline dimming).
  */
-export function drawAvatar(ctx: CanvasRenderingContext2D, cls: ClassId, c: Palette, r: number, breathe = 1, t = 0) {
+export function drawAvatar(ctx: CanvasRenderingContext2D, cls: ClassId, c: Palette, r: number, breathe = 1, t = 0, fast = false) {
   const R = r * breathe
   const pulse = 0.5 + 0.5 * Math.sin(t / 260)
 
@@ -200,7 +225,7 @@ export function drawAvatar(ctx: CanvasRenderingContext2D, cls: ClassId, c: Palet
     ctx.lineTo(R * 0.06, R * 0.56)
     ctx.closePath()
     ctx.fill()
-    glow(ctx, c.light, blur, () => {
+    glow(ctx, c.light, blur, fast, [R * 0.5, 0, R * 0.34, R * 0.44], () => {
       ctx.fillStyle = c.ink
       ctx.beginPath()
       ctx.moveTo(R * 0.74, 0)
@@ -214,7 +239,7 @@ export function drawAvatar(ctx: CanvasRenderingContext2D, cls: ClassId, c: Palet
     })
   } else if (cls === 'GUARDIAN') {
     // power core in the chest plate
-    glow(ctx, c.light, blur * (0.6 + 0.6 * pulse), () => {
+    glow(ctx, c.light, blur * (0.6 + 0.6 * pulse), fast, [-R * 0.12, 0, R * 0.2, R * 0.2], () => {
       ctx.fillStyle = c.ink
       ctx.globalAlpha *= 0.65 + 0.35 * pulse
       hexPath(ctx, R * 0.2, -R * 0.12)
@@ -225,7 +250,7 @@ export function drawAvatar(ctx: CanvasRenderingContext2D, cls: ClassId, c: Palet
     ctx.beginPath()
     ctx.roundRect(R * 0.22, -R * 0.6, R * 0.42, R * 1.2, R * 0.12)
     ctx.fill()
-    glow(ctx, c.light, blur, () => {
+    glow(ctx, c.light, blur, fast, [R * 0.44, 0, R * 0.06, R * 0.44], () => {
       ctx.fillStyle = c.ink
       ctx.fillRect(R * 0.38, -R * 0.44, R * 0.12, R * 0.88)
     })
@@ -236,7 +261,7 @@ export function drawAvatar(ctx: CanvasRenderingContext2D, cls: ClassId, c: Palet
     ctx.beginPath()
     ctx.arc(0, 0, R * 1.34, -0.78, 0.78)
     ctx.stroke()
-    glow(ctx, c.light, blur * (0.5 + pulse), () => {
+    glow(ctx, c.light, blur * (0.5 + pulse), fast, [R * 1.22, 0, R * 0.12, R * 0.9], () => {
       const sg = ctx.createLinearGradient(R * 1.2, -R, R * 1.2, R)
       const k = (t / 1400) % 1
       sg.addColorStop(0, c.light)
@@ -265,7 +290,7 @@ export function drawAvatar(ctx: CanvasRenderingContext2D, cls: ClassId, c: Palet
     ctx.beginPath()
     ctx.ellipse(R * 0.45, 0, R * 0.17, R * 0.55, 0, 0, TAU)
     ctx.fill()
-    glow(ctx, c.light, blur * (0.7 + 0.8 * pulse), () => {
+    glow(ctx, c.light, blur * (0.7 + 0.8 * pulse), fast, [R * 0.48, -R * 0.12, R * 0.07, R * 0.24], () => {
       ctx.fillStyle = c.ink
       ctx.globalAlpha *= 0.7 + 0.3 * pulse
       ctx.beginPath()

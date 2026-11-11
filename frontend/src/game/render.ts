@@ -3,7 +3,7 @@
    snapshots ~INTERP_MS in the past, smoothly. Colors come from tokens.ts. */
 
 import type { ClassId, DecidedBy, WeaponId } from '../api'
-import { drawAvatar, drawWeapon, gunOf } from './classes'
+import { bloom, drawAvatar, drawWeapon, gunOf } from './classes'
 import { spawnTracers, stepTracer, type ShotSpec, type Tracer } from './predict'
 import { alpha, color, font, team as TC, type Team } from './tokens'
 
@@ -292,13 +292,11 @@ export class Renderer {
     ctx.moveTo(x - dx * tail, y - dy * tail)
     ctx.lineTo(x, y)
     ctx.stroke()
-    ctx.shadowColor = TC[team].base
-    ctx.shadowBlur = w === 'SNIPER_RIFLE' ? 14 : 8
+    bloom(ctx, TC[team].base, x, y, w === 'SNIPER_RIFLE' ? 14 : 9)
     ctx.fillStyle = '#FFFFFF'
     ctx.beginPath()
     ctx.arc(x, y, this.map.shotR - (w === 'SHOTGUN' ? 1.6 : 0.5), 0, TAU)
     ctx.fill()
-    ctx.shadowBlur = 0
   }
 
   private drawBarrier(ctx: CanvasRenderingContext2D, b: GBarrier, t: number) {
@@ -307,13 +305,11 @@ export class Renderer {
     const fade = left < 1200 ? 0.45 + 0.4 * Math.sin(t / 70) : 1 // flickers out in its last second
     ctx.save()
     ctx.globalAlpha = 0.9 * fade
-    ctx.shadowColor = c.base
-    ctx.shadowBlur = 12
+    bloom(ctx, c.base, b.x + b.w / 2, b.y + b.h / 2, b.w / 2 + 14, b.h / 2 + 14)
     ctx.fillStyle = alpha(c.deep, 0.85)
     ctx.beginPath()
     ctx.roundRect(b.x, b.y, b.w, b.h, 3)
     ctx.fill()
-    ctx.shadowBlur = 0
     ctx.strokeStyle = c.light
     ctx.lineWidth = 1.5
     ctx.stroke()
@@ -530,7 +526,7 @@ export class Renderer {
         ctx.save()
         ctx.globalAlpha = dim * (0.32 - i * 0.07)
         ctx.translate(-i * 12, 0)
-        drawAvatar(ctx, p.class, c, R, 1, t)
+        drawAvatar(ctx, p.class, c, R, 1, t, true)
         ctx.restore()
       }
     }
@@ -547,13 +543,12 @@ export class Renderer {
     const gun = gunOf(p.weapon, R)
     drawWeapon(ctx, p.weapon, c, R, recoil)
     // body: the class silhouette in the team's colors
-    drawAvatar(ctx, p.class, c, R, moving ? 1 : 1 + Math.sin(t / 420) * 0.025, t)
+    drawAvatar(ctx, p.class, c, R, moving ? 1 : 1 + Math.sin(t / 420) * 0.025, t, true)
     // muzzle flash
     if (t - a.shotAt < 70) {
       const m = gun.len + R * 0.2
+      bloom(ctx, c.light, m + 6, 0, 14, 11)
       ctx.fillStyle = '#FFF6D6'
-      ctx.shadowColor = c.light
-      ctx.shadowBlur = 12
       ctx.beginPath()
       ctx.moveTo(m + 6, 0)
       ctx.lineTo(m + 1, -4)
@@ -561,7 +556,6 @@ export class Renderer {
       ctx.lineTo(m + 1, 4)
       ctx.closePath()
       ctx.fill()
-      ctx.shadowBlur = 0
     }
     // hit flash
     if (t - a.hitAt < 120) {
