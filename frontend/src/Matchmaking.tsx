@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import type { Loadout, MatchDTO, MMStatus, QPlayer, QueueDTO, TeamDTO } from './api'
-import { MAX_PARTY, type Player } from './data'
+import { MAX_PARTY, modeLabel, type Player } from './data'
 import { Game, type Rematch } from './Game'
 import { BUILD, CLASS_IDS, CLASS_INFO, WEAPON_IDS, WEAPON_INFO } from './game/classes'
 import { sfx } from './game/sfx'
@@ -15,7 +15,6 @@ function playersOf(team: TeamDTO, meId: string): QPlayer[] {
 }
 
 const clock = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
-const modeLabel = (_m: 'SQUAD') => 'Squad'
 const EST_SECS = 30 // shown as the queue estimate; past it the screen says so
 
 export function Matchmaking({

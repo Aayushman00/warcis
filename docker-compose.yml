@@ -87,6 +87,17 @@ services:
     ports: ["${FRONTEND_PORT:-8080}:80"]
     depends_on: [gateway]
 
+  # Cloudflare Tunnel: public HTTPS (+WebSocket) with no open inbound ports.
+  #   docker compose -f docker-compose.yml -f docker-compose.prod.yml --profile cloudflare up -d --build
+  cloudflared:
+    profiles: [cloudflare]
+    image: cloudflare/cloudflared:2025.11.1
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:-}   # empty is fine unless --profile cloudflare
+    restart: unless-stopped
+    depends_on: [frontend]
+
   # Optional bot players (real API clients) so a 4v4 can form with few humans.
   bots:
     profiles: [demo]

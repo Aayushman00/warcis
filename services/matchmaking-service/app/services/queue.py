@@ -99,7 +99,7 @@ async def cancel(user_id: str) -> None:
 async def waiting() -> list[dict]:
     """Who is searching right now. Demo bots poll this to decide when to fill in for humans."""
     return [
-        {"party_id": e["party_id"], "player_ids": e["player_ids"], "joined_at": e["joined_at"].isoformat(), "fill": e["fill"]}
+        {"party_id": e["party_id"], "player_ids": e["player_ids"], "joined_at": e["joined_at"].isoformat(), "fill": e["fill"], "mode": e["mode"]}
         async for e in queue.find({"status": "WAITING"})
     ]
 
@@ -367,7 +367,7 @@ async def tick() -> None:
             await queue.update_many({"party_id": {"$in": list(stale)}, "status": "WAITING"}, {"$set": {"status": "INVALIDATED"}})
             waiting = [e for e in waiting if e["party_id"] not in stale]
 
-        for mode in ("SQUAD",):
+        for mode in ("CTF", "TDM", "KOTH"):
             pool = [e for e in waiting if e["mode"] == mode]
             for a, b in matchups([e for e in pool if e["fill"]]):
                 await _create_match(mode, a, b)

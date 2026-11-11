@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { token, type ClassId, type DecidedBy, type MatchDTO, type WeaponId } from './api'
-import type { Player } from './data'
+import { modeLabel, type Player } from './data'
 import './game/hud.css'
 import { Renderer, Timeline, type GMap, type Snapshot } from './game/render'
 import { isMuted, setMuted, sfx, unlockAudio } from './game/sfx'
@@ -8,6 +8,7 @@ import { color, cssVars, other, type Team } from './game/tokens'
 import { ClassAvatar } from './Loadout'
 import { Scoreboard, type ScoreRow } from './Scoreboard'
 import { TouchControls, type TouchApi } from './game/TouchControls'
+import { Predictor, movable } from './game/predict'
 
 /* In-match client. The server (services/game-service) is authoritative: this component
    sends intents (held keys, aim point), renders interpolated snapshots on the canvas, and
@@ -15,7 +16,10 @@ import { TouchControls, type TouchApi } from './game/TouchControls'
    per-frame numbers (clock, respawn ring) are written straight to the DOM. */
 
 /** Numbers the server sends once in `hello`; the HUD only draws them (cooldown rings), the server enforces them. */
-type Catalog = { classes: Record<ClassId, { hp: number; ability: string; cooldownMs: number; durationMs: number }> }
+type Catalog = {
+  classes: Record<ClassId, { hp: number; ability: string; cooldownMs: number; durationMs: number }>
+  weapons: Record<WeaponId, { speed: number; ttlMs: number }>
+}
 type Msg = Snapshot | { t: 'hello'; you: string; map: GMap; catalog: Catalog } | { t: 'error'; code: string; message: string } | { t: 'pong'; c: number }
 type Who = { name: string; team: Team }
 type FlagHud = { state: 'AT_BASE' | 'CARRIED' | 'DROPPED'; carrier: Who | null; returnAt: number | null }
@@ -23,6 +27,7 @@ type Hud = {
   me: (Who & { hp: number; maxHp: number; cls: ClassId; weapon: WeaponId; alive: boolean; carrying: boolean; killer: Who | null }) | null
   roster: Record<Team, { id: string; alive: boolean; connected: boolean }[]>
   flags: Record<Team, FlagHud>
+  hill: { owner: Team | null; contested: boolean } | null // King of the Hill only
   ended: boolean
   winner: Team | null // ended with no winner = draw
   decidedBy: DecidedBy | null
@@ -54,7 +59,9 @@ const KEYS: Record<string, 'up' | 'down' | 'left' | 'right'> = {
 const isTouch = () => new URLSearchParams(location.search).has('touch') || !!window.matchMedia?.('(pointer: coarse)').matches // ?touch forces it on desktop for testing
 const RECONNECT_FOR_MS = 60_000
 const PING_EVERY_MS = 2000
-const FIRE_SEND_MS = 20
+const FIRE_SEND_MS = 33
+const ASSIST_RAD = 0.3 // touch aim assist: an enemy within ~17° of the thumb's direction gets the shot
+const STICK_RESEND_DOT = 0.999 // resend the move stick only after it turns ~2.5°
 const INTRO_IF_YOUNGER_MS = 15_000
 const tc = (t: Team) => (t === 'RED' ? 'g-red' : 'g-blue')
 const KICKER: Record<DecidedBy, string> = {
@@ -65,8 +72,12 @@ const KICKER: Record<DecidedBy, string> = {
   KILLS: 'Objective level, decided on kills',
   DRAW: 'Objective and kills level',
 }
-const kicker = (by: DecidedBy | null, hasWinner: boolean) => (by ? KICKER[by] : hasWinner ? 'Match over' : 'Time is up, scores are level') // null: stored before sudden death existed
-/** The numbers behind a 12:00 tiebreak, so a win on progress or kills is not a mystery. */
+type Kickers = Partial<Record<DecidedBy, string>>
+const TDM_KICKER: Kickers = { SUDDEN_DEATH: 'Sudden death kill', DRAW: 'Time is up, kills are level' }
+const KOTH_KICKER: Kickers = { SUDDEN_DEATH: 'Sudden death point', KILLS: 'Hill level, decided on kills', DRAW: 'Hill and kills level' }
+const kicker = (by: DecidedBy | null, hasWinner: boolean, mode?: Kickers) =>
+  by ? mode?.[by] || KICKER[by] : hasWinner ? 'Match over' : 'Time is up, scores are level' // null: stored before sudden death existed
+/** The numbers behind a 6:00 tiebreak, so a win on progress or kills is not a mystery. */
 function tiebreakLine(f: { decidedBy: DecidedBy | null; progress: Record<Team, number>; rows: { team: Team; kills: number }[] }) {
   if (f.decidedBy !== 'OBJECTIVE' && f.decidedBy !== 'KILLS' && f.decidedBy !== 'DRAW') return null
   const kills = (t: Team) => f.rows.filter((r) => r.team === t).reduce((n, r) => n + r.kills, 0)
@@ -79,6 +90,8 @@ function tiebreakLine(f: { decidedBy: DecidedBy | null; progress: Record<Team, n
 }
 const cap = (t: Team) => t[0] + t.slice(1).toLowerCase()
 const ROUNDS_TO_WIN = 3 // mirrors game-service sim.ROUNDS_TO_WIN, display only
+const KILLS_TO_WIN = 40 // mirrors game-service sim.KILLS_TO_WIN, display only
+const HILL_TO_WIN = 100 // mirrors game-service sim.HILL_TO_WIN, display only
 const clock = (ms: number) => {
   const s = Math.max(0, Math.floor(ms / 1000))
   return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`
@@ -110,6 +123,7 @@ function viewSnap(s: Snapshot, w: number, v: View): Snapshot {
     progress: v.swap ? { RED: s.progress.BLUE, BLUE: s.progress.RED } : s.progress,
     players: s.players.map((p) => ({ ...p, team: t(p.team), x: p.x === null ? null : x(p.x) })),
     flags: s.flags.map((f) => ({ ...f, team: t(f.team), x: x(f.x) })),
+    hill: s.hill && { ...s.hill, x: x(s.hill.x), owner: s.hill.owner && t(s.hill.owner) },
     shots: s.shots.map((o) => ({ ...o, team: t(o.team), x: x(o.x) })),
     barriers: s.barriers.map((b) => ({ ...b, team: t(b.team), x: v.mirror ? w - b.x - b.w : b.x })), // x is the slab's left edge
   }
@@ -125,13 +139,14 @@ function hudOf(s: Snapshot, meId: string): Hud {
   const roster = { RED: [], BLUE: [] } as Hud['roster']
   for (const p of s.players) roster[p.team].push({ id: p.id, alive: p.alive, connected: p.connected })
   const flag = (t: Team): FlagHud => {
-    const f = s.flags.find((x) => x.team === t)!
-    return { state: f.state, carrier: who(f.carrierId), returnAt: f.returnAt }
+    const f = s.flags.find((x) => x.team === t)
+    return f ? { state: f.state, carrier: who(f.carrierId), returnAt: f.returnAt } : { state: 'AT_BASE', carrier: null, returnAt: null } // TDM: no flags
   }
   return {
     me: m ? { name: m.name, team: m.team, hp: m.hp, maxHp: m.maxHp, cls: m.class, weapon: m.weapon, alive: m.alive, carrying: m.carryingFlag, killer: m.alive ? null : who(m.killedBy) } : null,
     roster,
     flags: { RED: flag('RED'), BLUE: flag('BLUE') },
+    hill: s.hill ? { owner: s.hill.owner, contested: s.hill.contested } : null,
     ended: s.state === 'ENDED',
     winner: s.winner,
     decidedBy: s.decidedBy,
@@ -191,7 +206,7 @@ const FullscreenIcon = () => (
 
 /* Blue (always my team in this view) above red. Rank = position by the server's rating
    (2*captures + K/D) across both teams; rows within a team are in rank order. */
-function Board({ rows, compact }: { rows: Row[]; compact?: boolean }) {
+function Board({ rows, compact, tdm }: { rows: Row[]; compact?: boolean; tdm?: boolean }) {
   const order = [...rows].sort((a, b) => b.rating - a.rating)
   const rank = new Map(order.map((r, i) => [r.id, i + 1]))
   return (
@@ -202,7 +217,7 @@ function Board({ rows, compact }: { rows: Row[]; compact?: boolean }) {
             <tr>
               <th className="g-b-rank">#</th>
               <th className="g-b-name">{cap(t)}</th>
-              <th>Caps</th>
+              {!tdm && <th>Caps</th>}
               <th>Kills</th>
               <th>Deaths</th>
               <th>Score</th>
@@ -215,7 +230,7 @@ function Board({ rows, compact }: { rows: Row[]; compact?: boolean }) {
                 <tr key={r.id} className={r.me ? 'is-me' : ''}>
                   <td className="g-b-rank">{rank.get(r.id)}</td>
                   <td className="g-b-name">{r.name}</td>
-                  <td>{r.captures}</td>
+                  {!tdm && <td>{r.captures}</td>}
                   <td>{r.kills}</td>
                   <td>{r.deaths}</td>
                   <td className="g-b-score">{r.rating.toFixed(2)}</td>
@@ -246,6 +261,7 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
   const lastHp = useRef<number | null>(null)
   const tl = useRef(new Timeline())
   const rend = useRef<Renderer | null>(null)
+  const pred = useRef<Predictor | null>(null)
   const [map, setMap] = useState<GMap | null>(null)
   const [hud, setHud] = useState<Hud | null>(null)
   const [banner, setBanner] = useState<Banner | null>(null)
@@ -261,6 +277,10 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
   const [abilities, setAbilities] = useState<Record<string, string>>({})
   const [fullscreen, setFullscreen] = useState(false)
   const touchApi = useRef<TouchApi | null>(null)
+  const tdm = match.mode === 'TDM'
+  const koth = match.mode === 'KOTH'
+  const ctf = !tdm && !koth // includes SQUAD, the pre-modes name
+  const modeName = modeLabel(match.mode)
   const skillEl = useRef<HTMLButtonElement>(null)
 
   // Phones: the match starts on a server timer, not a tap, and browsers only grant full screen + orientation lock
@@ -293,10 +313,20 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
     const timers: ReturnType<typeof setTimeout>[] = []
     const later = (ms: number, fn: () => void) => void timers.push(setTimeout(fn, ms))
     const held = { up: false, down: false, left: false, right: false }
+    let stick: { x: number; y: number } | null = null // touch move direction at any angle; wins over keys (server too)
+    let weapons: Catalog['weapons'] | null = null
+    const vel = new Map<string, { x: number; y: number }>() // px/s per player from the last two snapshots, for aim lead
     const send = (m: object) => ws?.readyState === WebSocket.OPEN && ws.send(JSON.stringify(m))
+    const buzz = (p: number | number[]) => touch && navigator.vibrate?.(p) // phone haptics (Android; iOS Safari has no vibrate)
     const view = viewOf(match.my_team)
     const flip = view.mirror
-    const sendInput = () => send({ t: 'input', ...held, ...(flip && { left: held.right, right: held.left }) })
+    const sendInput = () => {
+      const kx = +held.right - +held.left
+      const ky = +held.down - +held.up
+      const n = Math.hypot(kx, ky)
+      if (pred.current) pred.current.dir = stick ?? (n ? { x: kx / n, y: ky / n } : { x: 0, y: 0 })
+      send({ t: 'input', ...held, ...(flip && { left: held.right, right: held.left }), ...(stick && { mx: flip ? -stick.x : stick.x, my: stick.y }) })
+    }
     const fire = (p: { x: number; y: number }) => send({ t: 'fire', x: flip ? dims.w - p.x : p.x, y: p.y })
     /** Q: the class ability, aimed at the cursor like a shot. Whether it can happen at all is the server's call. */
     const cast = () => {
@@ -311,7 +341,7 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
       introPlayed = true
       ;([3, 2, 1] as const).forEach((n, i) => later(i * 480, () => (setIntro(n), sfx.countdown(false))))
       later(1440, () => (setIntro('go'), sfx.countdown(true)))
-      later(2540, () => (setIntro(null), setBanner({ id: ++seq, title: 'STEAL THE ENEMY FLAG', sub: 'Bring it back to your base', team: 'BLUE' })))
+      later(2540, () => (setIntro(null), setBanner({ id: ++seq, ...(tdm ? { title: 'ELIMINATE THE ENEMY', sub: `First team to ${KILLS_TO_WIN} kills wins` } : koth ? { title: 'HOLD THE HILL', sub: `Stand in the zone alone to score · first to ${HILL_TO_WIN}` } : { title: 'STEAL THE ENEMY FLAG', sub: 'Bring it back to your base' }), team: 'BLUE' })))
     }
 
     /** Turn the difference between two authoritative snapshots into feedback, timed to render time. */
@@ -327,7 +357,7 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
         if (!q) continue
         if (p.hp < q.hp && p.x !== null && p.y !== null) {
           const [px, py] = [p.x, p.y]
-          r.at(t, () => (r.hit(p.id, px, py, q.hp - p.hp, p.team, t), sfx.hit(p.id === me.id)))
+          r.at(t, () => (r.hit(p.id, px, py, q.hp - p.hp, p.team, t), sfx.hit(p.id === me.id), p.id === me.id && buzz(20)))
         }
         if (q.alive && !p.alive && p.x !== null && p.y !== null) {
           const [px, py] = [p.x, p.y]
@@ -336,6 +366,7 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
           r.at(t, () => {
             r.death(p.id, px, py, p.team, t)
             sfx.death(p.id === me.id)
+            if (row.mine) buzz(p.id === me.id ? 150 : [30, 40, 30]) // long = I went down, double tap = my kill
             setFeed((f) => [...f.slice(-4), row])
             later(5000, () => setFeed((f) => f.filter((x) => x.id !== row.id)))
           })
@@ -372,7 +403,8 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
         }
       }
       const scored = (['RED', 'BLUE'] as Team[]).find((x) => b.scores[x] > a.scores[x])
-      if (scored) {
+      if (a.hill && b.hill && a.hill.y !== b.hill.y) announce('HILL MOVED', 'Get to the new zone', mine?.team ?? 'BLUE', t)
+      if (scored && ctf) {
         const base = b.flags.find((f) => f.team === scored)!
         r.at(t, () => {
           r.flagEvent(base.x, base.y, scored, t, true)
@@ -384,11 +416,22 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
         r.at(t, () => sfx.win(mine?.team === w))
       }
       if (b.round > a.round) announce(`ROUND ${b.round}`, 'Steal the enemy flag and bring it home', mine?.team ?? 'BLUE', t)
-      if (b.suddenDeath && !a.suddenDeath) announce('SUDDEN DEATH', 'No respawns · next capture wins', mine?.team ?? 'BLUE', t)
+      if (b.suddenDeath && !a.suddenDeath) announce('SUDDEN DEATH', `No respawns · next ${tdm ? 'kill' : koth ? 'point' : 'capture'} wins`, mine?.team ?? 'BLUE', t)
     }
 
     const onSnapshot = (s: Snapshot) => {
       tl.current.push(s)
+      const m0 = s.players.find((p) => p.id === me.id)
+      pred.current?.server(m0?.alive ? m0.x : null, m0?.alive ? m0.y : null, movable(s), performance.now())
+      if (prev && s.now > prev.now) {
+        const before = new Map(prev.players.map((p) => [p.id, p]))
+        const dt = (s.now - prev.now) / 1000
+        for (const p of s.players) {
+          const q = before.get(p.id)
+          if (p.x === null || p.y === null || !q || q.x === null || q.y === null || Math.abs(p.x - q.x) + Math.abs(p.y - q.y) > 80) vel.delete(p.id)
+          else vel.set(p.id, { x: (p.x - q.x) / dt, y: (p.y - q.y) / dt })
+        }
+      }
       if (prev) events(prev, s)
       else if (!introPlayed && s.state === 'PLAYING' && s.elapsed < INTRO_IF_YOUNGER_MS) playIntro()
       prev = s
@@ -412,7 +455,9 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
           tl.current.reset() // fresh timeline after a reconnect: no sliding from stale positions
           const vm = viewMap(m.map, view)
           dims = vm
+          weapons = m.catalog.weapons
           rend.current ??= new Renderer(vm, me.id)
+          pred.current = new Predictor(vm) // fresh after a reconnect too: the old history is stale
           for (const [id, c] of Object.entries(m.catalog.classes)) rend.current.cooldowns[id] = c.cooldownMs
           setAbilities(Object.fromEntries(Object.entries(m.catalog.classes).map(([id, c]) => [id, c.ability])))
           setMap((old) => old ?? vm)
@@ -420,7 +465,9 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
           sendInput()
           send({ t: 'ping', c: performance.now() })
         } else if (m.t === 'pong') {
-          setPing(Math.round(performance.now() - m.c))
+          const rtt = performance.now() - m.c
+          pred.current?.setRtt(rtt)
+          setPing(Math.round(rtt))
         } else if (m.t === 'error') {
           done = true
           setFatal(m.message)
@@ -440,6 +487,8 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
     }
     connect()
 
+    // Fire intent: aim point in world coords while LMB or Space is held; the server enforces the cooldown.
+    let aim: { x: number; y: number } | null = null
     const onKey = (down: boolean) => (e: KeyboardEvent) => {
       unlockAudio()
       if (e.code === 'Tab') {
@@ -448,6 +497,14 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
         return
       }
       if (down && e.code === 'KeyQ' && !e.repeat) return cast()
+      if (e.code === 'Space' && !done) {
+        // Hold Space = hold LMB, at the cursor: a trackpad cannot click-and-hold while it steers the pointer.
+        e.preventDefault()
+        if (e.repeat) return
+        aim = down ? cursor : null
+        if (aim) fire(aim)
+        return
+      }
       const k = KEYS[e.code]
       if (!k || held[k] === down) return
       e.preventDefault()
@@ -458,26 +515,58 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
     // view space (like the cursor), so `fire` / `sendInput` mirror them for team 1 exactly as for the mouse.
     let aimDir: { x: number; y: number } | null = null
     let moveDir = { x: 1, y: 0 }
+    // Far point along a direction from where I am drawn. Far, so the server (which aims from its own, slightly
+    // older copy of me) gets nearly the same angle.
     const dirPoint = (d: { x: number; y: number }) => {
-      const m = tl.current.latest()?.players.find((p) => p.id === me.id)
-      return m && m.x !== null && m.y !== null ? { x: m.x + d.x * 300, y: m.y + d.y * 300 } : null
+      const m = pred.current?.pos
+      return m ? { x: m.x + d.x * 1000, y: m.y + d.y * 1000 } : null
+    }
+    /** Touch aim: the enemy closest to the thumb's direction (within ASSIST_RAD and weapon range), led by its
+     *  velocity over shot travel + network delay; else straight along the thumb. */
+    const touchTarget = (d: { x: number; y: number }) => {
+      const o = pred.current?.pos
+      const s = tl.current.latest()
+      const mine = s?.players.find((p) => p.id === me.id)
+      const w = mine && weapons?.[mine.weapon]
+      if (!o || !s || !mine || !w) return dirPoint(d)
+      let best: { x: number; y: number; id: string; dist: number } | null = null
+      let bestA = ASSIST_RAD
+      for (const e of s.players) {
+        if (e.team === mine.team || !e.alive || e.x === null || e.y === null) continue
+        const dx = e.x - o.x
+        const dy = e.y - o.y
+        const dist = Math.hypot(dx, dy)
+        if (dist > (w.speed * w.ttlMs) / 1000) continue
+        const a = Math.abs(Math.atan2(d.x * dy - d.y * dx, d.x * dx + d.y * dy))
+        if (a < bestA) [bestA, best] = [a, { x: e.x, y: e.y, id: e.id, dist }]
+      }
+      if (!best) return dirPoint(d)
+      const v = vel.get(best.id) ?? { x: 0, y: 0 }
+      const lead = best.dist / w.speed + (pred.current?.rtt ?? 100) / 2000 // ponytail: linear lead, ignores walls in the way
+      return { x: best.x + v.x * lead, y: best.y + v.y * lead }
+    }
+    const aimAt = (p: { x: number; y: number }) => {
+      const o = pred.current?.pos
+      if (o && rend.current) rend.current.myAim = Math.atan2(p.y - o.y, p.x - o.x) // cosmetic: my weapon follows the aim
     }
     touchApi.current = {
       move(x, y) {
         const m = Math.hypot(x, y)
-        const next = { up: m > 0.3 && y < -0.38, down: m > 0.3 && y > 0.38, left: m > 0.3 && x < -0.38, right: m > 0.3 && x > 0.38 }
-        if (m > 0.3) moveDir = { x: x / m, y: y / m }
-        if ((Object.keys(next) as (keyof typeof next)[]).every((k) => held[k] === next[k])) return
-        Object.assign(held, next)
+        const next = m > 0.3 ? { x: x / m, y: y / m } : null
+        if (next) moveDir = next
+        if (!next === !stick && (!next || next.x * stick!.x + next.y * stick!.y > STICK_RESEND_DOT)) return
+        stick = next
+        // 8-way keys ride along for anything that ignores mx/my; the server uses the stick when present
+        Object.assign(held, { up: !!next && y < -0.38 * m, down: !!next && y > 0.38 * m, left: !!next && x < -0.38 * m, right: !!next && x > 0.38 * m })
         sendInput()
       },
       aim(x, y) {
         const m = Math.hypot(x, y)
         aimDir = m < 0.25 ? null : { x: x / m, y: y / m } // dragged out = shooting
-        const p = aimDir && dirPoint(aimDir)
-        if (aimDir && p && rend.current) {
+        const p = aimDir && touchTarget(aimDir)
+        if (p) {
           cursor = p
-          rend.current.myAim = Math.atan2(aimDir.y, aimDir.x)
+          aimAt(p)
         }
       },
       skill() {
@@ -491,11 +580,11 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
     const blur = () => {
       setShowBoard(false)
       held.up = held.down = held.left = held.right = false
+      stick = null
+      aim = null
       sendInput()
     }
 
-    // Fire intent: aim point in world coords while LMB is held; the server enforces the cooldown.
-    let aim: { x: number; y: number } | null = null
     let lastFire = 0
     const toWorld = (e: MouseEvent) => {
       const r = canvas.current!.getBoundingClientRect()
@@ -513,8 +602,7 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
       const w = toWorld(e)
       cursor = w
       if (aim) aim = w
-      const mine = tl.current.latest()?.players.find((p) => p.id === me.id)
-      if (mine && mine.x !== null && mine.y !== null) rend.current.myAim = Math.atan2(w.y - mine.y, w.x - mine.x) // cosmetic: my weapon follows the cursor
+      aimAt(w)
     }
     const mu = (e: MouseEvent) => e.button === 0 && (aim = null)
     window.addEventListener('keydown', kd)
@@ -526,9 +614,10 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
     // While LMB is held, keep sending the aim point. The server's per-weapon cooldown decides which ones
     // count, so a fast weapon is never throttled by the client (a coarse client interval would round it up).
     const autofire = setInterval(() => {
-      const target = aimDir ? dirPoint(aimDir) : aim
+      const target = aimDir ? touchTarget(aimDir) : aim // touch re-targets every send: the assist tracks a moving enemy
       if (target && Date.now() - lastFire >= FIRE_SEND_MS) {
         lastFire = Date.now()
+        if (aimDir) aimAt(target)
         fire(target)
       }
     }, FIRE_SEND_MS)
@@ -549,13 +638,32 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
       window.removeEventListener('mousemove', mm)
       window.removeEventListener('mouseup', mu)
     }
-  }, [match.match_id, match.my_team, me.id])
+  }, [match.match_id, match.my_team, me.id, tdm, koth, ctf, touch])
+
+  // Keep the screen on for the match: a phone held on two sticks, or a laptop on battery, otherwise dims mid-fight.
+  useEffect(() => {
+    let lock: WakeLockSentinel | null = null
+    let off = false
+    const hold = () =>
+      document.visibilityState === 'visible' &&
+      void navigator.wakeLock
+        ?.request('screen')
+        .then((l) => (off ? void l.release() : (lock = l)))
+        .catch(() => {}) // unsupported, or battery saver said no
+    hold()
+    document.addEventListener('visibilitychange', hold) // the browser drops the lock whenever the tab hides
+    return () => {
+      off = true
+      document.removeEventListener('visibilitychange', hold)
+      void lock?.release()
+    }
+  }, [])
 
   // Render loop: canvas plus the per-frame HUD numbers, written straight to the DOM.
   useEffect(() => {
     const c = canvas.current
     if (!map || !c) return
-    const dpr = window.devicePixelRatio || 1
+    const dpr = Math.min(window.devicePixelRatio || 1, 2) // a 3x phone screen would draw 2.25x the pixels for little visible gain
     c.width = map.w * dpr
     c.height = map.h * dpr
     const ctx = c.getContext('2d')!
@@ -564,11 +672,15 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
     const frame = () => {
       raf = requestAnimationFrame(frame)
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+      if (pred.current && rend.current) {
+        pred.current.step(performance.now())
+        rend.current.mePos = pred.current.pos
+      }
       rend.current?.draw(ctx, tl.current)
       const s = tl.current.latest()
       if (!s) return
       const t = tl.current.renderTime()
-      // Regulation counts down to 10:00; sudden death then counts down the 2 minutes to the tiebreak.
+      // Regulation counts down 5:00; sudden death then counts down the last minute to the tiebreak.
       const elapsed = s.state === 'ENDED' ? s.elapsed : s.elapsed - (s.now - t)
       const remaining = (s.suddenDeath ? s.hardStopMs : s.matchMs) - elapsed
       if (clockEl.current) {
@@ -629,6 +741,12 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
 
   const objective = (() => {
     if (!hud || !mine || hud.ended || hud.intermission || !mine.alive) return null
+    if (hud.hill) {
+      if (hud.hill.contested) return { text: 'Hill contested, clear them out', team: other(mine.team), icon: <Alert /> }
+      if (hud.hill.owner === mine.team) return { text: 'Your team holds the hill', team: mine.team, icon: <FlagIcon /> }
+      if (hud.hill.owner) return { text: 'Enemy holds the hill, take it back', team: other(mine.team), icon: <Alert /> }
+      return { text: 'Hill is empty, get in the zone', team: null, icon: <FlagIcon /> }
+    }
     const own = hud.flags[mine.team]
     const theirs = hud.flags[other(mine.team)]
     if (mine.carrying)
@@ -685,6 +803,7 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
         <span key={score[t]} className={`g-score ${score[t] ? 'is-bumped' : ''}`}>
           {score[t]}
         </span>
+        {!ctf && <i className="g-prog" style={{ ['--p' as string]: Math.min(1, score[t] / (tdm ? KILLS_TO_WIN : HILL_TO_WIN)) } as CSSProperties} />}
       </div>
     )
   }
@@ -708,17 +827,18 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
       <header className="g-plate" aria-label="Match score">
         {wing('BLUE')}
         <div className="g-clock">
-          <span ref={clockEl}>10:00</span>
-          {hud && !hud.ended && <small className={`g-round-tag ${hud.suddenDeath ? 'is-sudden' : ''}`}>{hud.suddenDeath ? 'SUDDEN DEATH' : `ROUND ${hud.round} · FIRST TO ${ROUNDS_TO_WIN}`}</small>}
+          <span ref={clockEl}>05:00</span>
+          {hud && !hud.ended && <small className={`g-round-tag ${hud.suddenDeath ? 'is-sudden' : ''}`}>{hud.suddenDeath ? 'SUDDEN DEATH' : tdm ? `FIRST TO ${KILLS_TO_WIN}` : koth ? `FIRST TO ${HILL_TO_WIN}` : `ROUND ${hud.round} · FIRST TO ${ROUNDS_TO_WIN}`}</small>}
         </div>
         {wing('RED')}
       </header>
 
       <main className="g-stage">
         <div className={`g-map ${mine && !mine.alive && !hud?.ended ? 'is-dead' : ''} ${hud?.ended || fatal ? 'is-over' : ''}`}>
-          <canvas ref={canvas} onContextMenu={(e) => e.preventDefault()} aria-label="Capture the flag arena" />
+          <canvas ref={canvas} onContextMenu={(e) => e.preventDefault()} aria-label={`${modeName} arena`} />
 
           <div className="g-layer">
+            {mine?.alive && mine.hp <= mine.maxHp / 4 && !hud?.ended && <div className="g-lowhp" aria-hidden />}
             <div className="g-feed" aria-live="polite">
               {feed.map((k) => (
                 <div key={k.id} className={`g-feed-row ${k.mine ? 'is-me' : ''}`}>
@@ -743,7 +863,7 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
               <div className="g-layer g-intro">
                 {intro === 'go' ? (
                   <div className="g-go">
-                    <span className="g-go-title">CAPTURE THE FLAG</span>
+                    <span className="g-go-title">{modeName.toUpperCase()}</span>
                   </div>
                 ) : (
                   <span key={intro} className="g-count">
@@ -767,7 +887,7 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
 
             {showBoard && !hud?.ended && hud && (
               <div className="g-layer g-boardlayer">
-                <Board rows={hud.board} compact={touch} />
+                <Board rows={hud.board} compact={touch} tdm={!ctf} />
               </div>
             )}
 
@@ -803,7 +923,7 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
                 <div className={`g-result-band ${final ? 'has-board' : ''}`} role="dialog" aria-label="Match result">
                   {final ? (
                     <>
-                      <span className="g-result-kicker">{kicker(final.decidedBy, !!final.winner)}</span>
+                      <span className="g-result-kicker">{kicker(final.decidedBy, !!final.winner, tdm ? TDM_KICKER : koth ? KOTH_KICKER : undefined)}</span>
                       <span className={`g-result-title ${won ? '' : 'is-defeat'}`}>{!final.winner ? 'DRAW' : won ? 'VICTORY' : 'DEFEAT'}</span>
                       <span className="g-result-score" aria-label={`Blue ${score.BLUE}, Red ${score.RED}`}>
                         <em className="g-blue">BLUE</em>
@@ -812,7 +932,7 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
                         <span className="g-red">{score.RED}</span>
                         <em className="g-red">RED</em>
                       </span>
-                      {tiebreakLine(final) ?? (final.winner && final.capturer && <span className="g-result-by">Last capture by {final.capturer.name}</span>)}
+                      {(ctf && tiebreakLine(final)) || (final.winner && final.capturer && <span className="g-result-by">Last capture by {final.capturer.name}</span>)}
                       <div className="g-result-board">
                         <Scoreboard rows={final.rows} meId={me.id} myTeam={myTeam ?? 'BLUE'} />
                       </div>
@@ -868,8 +988,10 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
             {objective.icon}
             {objective.text}
           </div>
-        ) : (
+        ) : touch ? (
           <span />
+        ) : (
+          <span className="g-hint">WASD move · Click or Space fire · Q skill · Tab scores</span>
         )}
 
         <div className="g-right">

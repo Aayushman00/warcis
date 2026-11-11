@@ -17,8 +17,8 @@ Assassin's coordinates are never sent to the enemy team.
 Persistence: the simulation lives in RAM. Every CHECKPOINT_MS a small snapshot goes to
 MongoDB `game_checkpoints` (one doc per match). On startup, recent PLAYING checkpoints of
 IN_PROGRESS matches are restored and players reconnect into them. A capture scores a
-round; first to 3, or the higher score at 10:00, ends the match. Level at 10:00 is sudden death
-(no respawns, next capture wins); still level at 12:00, objective progress, then kills, decide,
+round; first to 3, or the higher score at 5:00, ends the match. Level at 5:00 is sudden death
+(no respawns, next capture wins); still level at 6:00, objective progress, then kills, decide,
 else it is a draw (stored as winner TIE). The server
 writes `result` (winner, scores, how it was decided, per-player kills / deaths / captures) onto the match and logs
 MATCH_ENDED and one PLAYER_RESULT per player; the match itself is still closed by
@@ -38,7 +38,7 @@ from warcis_common import loadout
 from warcis_common.errors import ApiError
 from warcis_common.security import decode_token
 
-from app.sim import CATALOG, MAP, TEAMS, Game
+from app.sim import CATALOG, MAP, MODES, TEAMS, Game
 
 TICK_HZ = 30
 CHECKPOINT_MS = 3000
@@ -128,7 +128,7 @@ async def open_room(match_id: str, user_id: str) -> Room:
         cp = await checkpoints.find_one({"match_id": match_id})
         t = now_ms()
         if cp is None:  # first player in: a brand-new game, checkpointed before anyone can act
-            room = Room(match_id, Game(roster(m), t))
+            room = Room(match_id, Game(roster(m), t, m["mode"] if m.get("mode") in MODES else "CTF"))  # older matches say SQUAD = CTF
             await save_checkpoint(match_id, room.game.checkpoint(t))
             room.saved_at = t
             return start(room)
@@ -178,6 +178,7 @@ async def _send(ws: WebSocket, msg: dict) -> None:
 
 async def run(room: Room) -> None:
     g, idle_since = room.game, None
+    next_tick = time.monotonic()
     try:
         while True:
             t = now_ms()
@@ -196,7 +197,13 @@ async def run(room: Room) -> None:
             if idle_since and t - idle_since > IDLE_DROP_S * 1000:
                 await save_checkpoint(room.match_id, g.checkpoint(t))  # reconnect restores it
                 return
-            await asyncio.sleep(1 / TICK_HZ)
+            # Fixed cadence: sleep to the next deadline, not a full period after this tick's work, so snapshots
+            # arrive evenly spaced. Running late skips ahead instead of bursting ticks to catch up.
+            next_tick += 1 / TICK_HZ
+            wait = next_tick - time.monotonic()
+            if wait < 0:
+                next_tick, wait = time.monotonic(), 0
+            await asyncio.sleep(wait)
     finally:
         rooms.pop(room.match_id, None)
 

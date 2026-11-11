@@ -1,0 +1,10 @@
+# Prod override: nothing is reachable from outside except through the Cloudflare tunnel.
+services:
+  postgres: { ports: !reset [], restart: unless-stopped }
+  mongodb: { ports: !reset [], restart: unless-stopped }
+  gateway: { ports: !reset [], restart: unless-stopped }
+  frontend: { ports: !reset [], restart: unless-stopped }
+  auth-service: { restart: unless-stopped }
+  party-service: { restart: unless-stopped }
+  matchmaking-service: { restart: unless-stopped }
+  game-service: { restart: unless-stopped }

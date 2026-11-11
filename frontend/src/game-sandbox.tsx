@@ -37,7 +37,7 @@ const WEAPON = {
   SHOTGUN: { cooldownMs: 850, damage: 9, pellets: 7, spread: 0.36, speed: 650, ttlMs: 420 },
   SNIPER_RIFLE: { cooldownMs: 1500, damage: 70, pellets: 1, spread: 0, speed: 1600, ttlMs: 900 },
 }
-const SPEED = 220, PR = 14, SR = 4, RESPAWN_MS = 3000, FLAG_RETURN_MS = 10000, TOUCH = PR + 12, ROUNDS_TO_WIN = 3, MATCH_MS = 600000, TICK_MS = 33
+const SPEED = 220, PR = 14, SR = 4, RESPAWN_MS = 3000, FLAG_RETURN_MS = 10000, TOUCH = PR + 12, ROUNDS_TO_WIN = 3, MATCH_MS = 300000, TICK_MS = 33
 const TEAMS: Team[] = ['RED', 'BLUE']
 const pick = <T,>(a: readonly T[]) => a[Math.floor(Math.random() * a.length)]
 const foe = (t: Team): Team => (t === 'RED' ? 'BLUE' : 'RED')
@@ -65,6 +65,7 @@ function createSim(onState: (s: Snapshot) => void) {
     }
   })
   const me = players[0]
+  let stick: { x: number; y: number } | null = null
   const flags: GFlag[] = MAP.bases.map((b) => ({ team: b.team, x: b.x, y: b.y, state: 'AT_BASE', carrierId: null, returnAt: null }))
   let shots: S[] = []
   let sid = 0
@@ -141,6 +142,7 @@ function createSim(onState: (s: Snapshot) => void) {
             p.vx *= Math.SQRT1_2
             p.vy *= Math.SQRT1_2
           }
+          if (p === me && stick) [p.vx, p.vy] = [stick.x * SPEED, stick.y * SPEED] // touch: any angle, like the server
         }
         move(p, p.vx * dt, p.vy * dt)
         p.dashing = now < p.dashUntil
@@ -186,26 +188,38 @@ function createSim(onState: (s: Snapshot) => void) {
     }
     for (const p of players) p.rating = p.captures * 100 + p.kills * 10 - p.deaths * 3
     onState({
-      t: 'state', now, elapsed: now - t0, matchMs: MATCH_MS, hardStopMs: 720000, suddenDeath: false, state, winner, decidedBy: state === 'ENDED' ? 'ROUNDS' : null,
-      progress: { RED: 0, BLUE: 0 }, // ponytail: the 12:00 tiebreak progress is not simulated
+      t: 'state', now, elapsed: now - t0, matchMs: MATCH_MS, hardStopMs: 360000, suddenDeath: false, state, winner, decidedBy: state === 'ENDED' ? 'ROUNDS' : null,
+      progress: { RED: 0, BLUE: 0 }, // ponytail: the 6:00 tiebreak progress is not simulated
       scores: { ...scores }, round, resumesAt: null, roundWinner: null, capturer,
       players: players.map(({ vx: _a, vy: _b, nextFire: _c, invisUntil: _d, dashUntil: _e, held: _f, ...p }) => p),
       flags: flags.map((f) => ({ ...f })),
       shots: shots.map(({ vx: _a, vy: _b, dmg: _c, exp: _d, ...s }) => s),
       barriers: [],
+      hill: KOTH ? hill(now) : null,
     })
+  }
+  // ponytail: ?mode=koth shows the zone and who holds it; hill points are not simulated here
+  const hill = (now: number) => {
+    const on = new Set(players.filter((p) => p.alive && Math.hypot(p.x - 600, p.y - 160) <= 70).map((p) => p.team))
+    return { x: 600, y: 160, r: 70, owner: on.size === 1 ? [...on][0] : null, contested: on.size > 1, movesAt: now + 30_000 - ((now - t0) % 30_000), everyMs: 30_000 }
   }
   const timer = setInterval(step, TICK_MS)
 
   const handle = (m: { t: string; c?: number; x?: number; y?: number } & Record<string, boolean | number | string | undefined>, reply: (m: object) => void) => {
     const now = Date.now()
-    if (m.t === 'input') me.held = { up: !!m.up, down: !!m.down, left: !!m.left, right: !!m.right }
+    if (m.t === 'input') {
+      me.held = { up: !!m.up, down: !!m.down, left: !!m.left, right: !!m.right }
+      const n = typeof m.mx === 'number' && typeof m.my === 'number' ? Math.hypot(m.mx, m.my) : 0
+      stick = n ? { x: (m.mx as number) / n, y: (m.my as number) / n } : null
+    }
     else if (m.t === 'fire') fire(me, m.x!, m.y!, now)
     else if (m.t === 'ability') ability(me, m.x!, m.y!, now)
     else if (m.t === 'ping') reply({ t: 'pong', c: m.c })
   }
   return { handle, stop: () => clearInterval(timer) }
 }
+
+const KOTH = new URLSearchParams(location.search).get('mode') === 'koth'
 
 class FakeWS {
   static OPEN = 1
@@ -216,7 +230,7 @@ class FakeWS {
   constructor(_url: string) {
     const emit = (m: object) => this.onmessage?.({ data: JSON.stringify(m) })
     this.sim = createSim(emit)
-    setTimeout(() => emit({ t: 'hello', you: ME.id, map: MAP, catalog: { classes: CLASS } }), 0)
+    setTimeout(() => emit({ t: 'hello', you: ME.id, map: MAP, catalog: { classes: CLASS, weapons: WEAPON } }), 0)
   }
   send(data: string) {
     this.sim.handle(JSON.parse(data), (m) => this.onmessage?.({ data: JSON.stringify(m) }))
@@ -230,7 +244,7 @@ class FakeWS {
 
 const match = {
   match_id: 'sandbox',
-  mode: 'SQUAD',
+  mode: KOTH ? 'KOTH' : 'SQUAD',
   status: 'ENTERED',
   created_at: new Date().toISOString(),
   teams: [0, 1].map((t) => ({ players: ids.slice(t * 4, t * 4 + 4).map((id, i) => ({ id, name: names[t * 4 + i], tag: id })), parties: [] })),

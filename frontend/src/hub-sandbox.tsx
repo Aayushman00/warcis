@@ -35,7 +35,7 @@ const nav: { id: View; label: string }[] = [
 
 function Sandbox() {
   const [view, setView] = useState<View>('home')
-  const [mode, setMode] = useState<Mode>('squad')
+  const [mode, setMode] = useState<Mode>('ctf')
   const [fill, setFill] = useState(true)
   const [party, setParty] = useState<Party>({ leaderId: 'me', members: [ME], pending: [] })
   const [requestsIn, setRequestsIn] = useState<Player[]>([{ ...friend(6, 'Kestrel', 'online'), requestId: 'r1' }])

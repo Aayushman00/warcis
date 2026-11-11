@@ -53,7 +53,21 @@ function Launcher({ me, setMe }: { me: Player; setMe: (p: Player | null) => void
   const [view, setView] = useState<View>('home')
   const [social, setSocial] = useState<SocialState | null>(null)
   const [mm, setMm] = useState<MMStatus>({ state: 'idle' })
-  const [mode, setMode] = useState<Mode>('squad')
+  const [mode, setMode] = useState<Mode>(() => {
+    try {
+      const m = localStorage.getItem('warcis.mode')
+      return m === 'tdm' || m === 'koth' ? m : 'ctf'
+    } catch {
+      return 'ctf'
+    }
+  })
+  useEffect(() => {
+    try {
+      localStorage.setItem('warcis.mode', mode)
+    } catch {
+      /* private mode: pick lasts until reload */
+    }
+  }, [mode])
   const [fill, setFill] = useState(true)
   const [activity, setActivity] = useState(() => [{ id: 0, text: 'Signed in to WARCIS', t: Date.now() }])
   const [toast, setToast] = useState<string | null>(null)
@@ -78,13 +92,16 @@ function Launcher({ me, setMe }: { me: Player; setMe: (p: Player | null) => void
   }, [])
 
   useEffect(() => {
-    const tick = () => void refresh().catch(() => {})
+    // Polling pauses while the tab is hidden. The heartbeat keeps running: a missed one flips presence to
+    // offline, which invalidates a queued party.
+    const tick = () => void (document.hidden || refresh().catch(() => {}))
     const beat = () => void api<Player>('/users/me/heartbeat', { method: 'POST' }).then(setMe).catch(() => {})
     tick()
     beat()
     const a = setInterval(tick, POLL_MS)
     const b = setInterval(beat, HEARTBEAT_MS)
-    return () => (clearInterval(a), clearInterval(b))
+    document.addEventListener('visibilitychange', tick) // catch up the moment the tab returns
+    return () => (clearInterval(a), clearInterval(b), document.removeEventListener('visibilitychange', tick))
   }, [refresh, setMe])
 
   useEffect(() => {
@@ -131,9 +148,9 @@ function Launcher({ me, setMe }: { me: Player; setMe: (p: Player | null) => void
   const statsIds = [me.id, ...friends.map((f) => f.id)].slice(0, MAX_STATS_IDS).join(',')
   useEffect(() => {
     const load = () =>
-      void api<Record<string, PlayerStats>>(`/matchmaking/stats?ids=${statsIds}`)
+      void (!document.hidden && api<Record<string, PlayerStats>>(`/matchmaking/stats?ids=${statsIds}`)
         .then(setStats)
-        .catch(() => {}) // stats are decoration: keep showing the last good numbers
+        .catch(() => {})) // stats are decoration: keep showing the last good numbers
     void api<HistoryPage>('/matchmaking/history?limit=20')
       .then((p) => setHistory(p.items))
       .catch(() => {}) // hub recap/streak/recent players: same story
@@ -153,6 +170,7 @@ function Launcher({ me, setMe }: { me: Player; setMe: (p: Player | null) => void
   useEffect(() => {
     if (queueing) return
     const probe = () => {
+      if (document.hidden) return
       const t = performance.now()
       api('/ping').then(
         () => setPing(Math.round(performance.now() - t)),

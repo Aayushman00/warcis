@@ -1,7 +1,16 @@
-"""Capture The Flag simulation. Pure logic: no I/O, time is passed in (ms), so the
+"""Capture The Flag, Team Deathmatch and King of the Hill simulation. Pure logic: no I/O, time is passed in (ms), so the
 server stays authoritative and the rules are testable. Self-check: python -m app.sim
 
-Team 0 = RED (left), team 1 = BLUE (right). A capture scores a round. First to ROUNDS_TO_WIN, or the higher score at
+Team 0 = RED (left), team 1 = BLUE (right).
+
+TDM: every enemy kill scores 1 and the flags are out of play. First to KILLS_TO_WIN, or the higher score at MATCH_MS,
+wins. Level at MATCH_MS: sudden death, the next kill wins (same switch as CTF below). Still level at HARD_STOP_MS: a draw.
+
+KOTH: flags out of play. One hill is live at a time and moves every HILL_MS. While alive players of exactly one team
+stand on it, that team scores 1 per second. First to HILL_TO_WIN, or the higher score at MATCH_MS, wins. Level at
+MATCH_MS: sudden death, respawns off and the next point wins. Still level at HARD_STOP_MS: more kills wins, else a draw.
+
+CTF: a capture scores a round. First to ROUNDS_TO_WIN, or the higher score at
 MATCH_MS, wins. Level at MATCH_MS: sudden death, respawns off and the next capture wins. Still level at HARD_STOP_MS, the
 match is finalized: more objective progress (furthest flag carry this round) wins, then more kills, else a draw.
 
@@ -22,9 +31,15 @@ RESPAWN_MS = 3000
 FLAG_RETURN_MS = 10_000
 TOUCH = PLAYER_R + 12  # player-to-flag pickup distance
 BASE_R = 60
-ROUNDS_TO_WIN = 3
-MATCH_MS = 600_000  # regulation; level scores here start sudden death
-HARD_STOP_MS = 720_000  # sudden death ends here and the tiebreak decides
+MODES = ("CTF", "TDM", "KOTH")
+ROUNDS_TO_WIN = 3  # CTF captures
+KILLS_TO_WIN = 40  # TDM kills
+HILL_TO_WIN = 100  # KOTH seconds of uncontested hold
+TARGET = {"CTF": ROUNDS_TO_WIN, "TDM": KILLS_TO_WIN, "KOTH": HILL_TO_WIN}
+HILL_R = 70
+HILL_MS = 30_000  # the live hill moves this often
+MATCH_MS = 300_000  # regulation; level scores here start sudden death
+HARD_STOP_MS = 360_000  # sudden death ends here and the tiebreak decides
 INTRO_MS = 3000  # 3-2-1-GO on the clients: nobody moves or fires until it is over
 INTERMISSION_MS = 4000  # frozen pause after a non-final capture, then the arena resets
 MOVE_STEP = PLAYER_R / 2  # a dash never advances more than this between wall checks
@@ -68,6 +83,7 @@ WALLS = [
     *_mirror(420, 600, 120, 40),
     (560, 240, 80, 220),  # centre block
 ]
+HILLS = ((W / 2, 160), (W / 2, H - 160))  # KOTH: the open pockets above and below the centre block
 # Slabs just outside the arena, so shots meet the map edge like any other wall.
 EDGES = [(-50, -50, W + 100, 50), (-50, H, W + 100, 50), (-50, -50, 50, H + 100), (W, -50, 50, H + 100)]
 
@@ -86,6 +102,7 @@ class Player:
     respawn_at: int | None = None
     carrying_flag: bool = False
     keys: dict = field(default_factory=lambda: {"up": False, "down": False, "left": False, "right": False})
+    stick: tuple[float, float] | None = None  # touch: unit move direction at any angle; overrides keys when set
     last_fire: int = -10**9
     killed_by: str | None = None  # display only: who landed the last hit, while dead
     kills: int = 0
@@ -205,10 +222,13 @@ def _loadout_of(d: dict) -> tuple[str, str]:
 
 
 class Game:
-    def __init__(self, teams: list[list[dict]], now: int):
+    def __init__(self, teams: list[list[dict]], now: int, mode: str = "CTF"):
         """teams: [[{id, name, class?, weapon?}, ...] RED, [...] BLUE], from the match document.
         A missing class/weapon (a match created before loadouts existed) means the default;
-        an unknown one is corruption and raises ValueError."""
+        an unknown one is corruption and raises ValueError. mode: CTF | TDM | KOTH."""
+        if mode not in MODES:
+            raise ValueError(f"unknown mode {mode}")
+        self.mode = mode
         self.players: dict[str, Player] = {}
         for t, roster in enumerate(teams):
             for i, p in enumerate(roster):
@@ -225,6 +245,7 @@ class Game:
         self.intro_ms = INTRO_MS  # tests zero this to skip the countdown
         self.last = now
         self.scores = [0, 0]
+        self.hold_ms = [0, 0]  # KOTH: uncontested hold not yet paid out as a point (always < 1000)
         self.round = 1
         self.resume_at: int | None = None  # set during the intermission after a capture
         self.round_winner: int | None = None
@@ -232,7 +253,7 @@ class Game:
         self.ended_at: int | None = None
         self.winner: int | None = None  # match winner; None once over means a draw
         self.capturer: str | None = None
-        self.sudden_death = False  # level at MATCH_MS: no respawns, next capture wins
+        self.sudden_death = False  # level at MATCH_MS: no respawns, next capture (TDM: kill) wins
         self.progress = [0, 0]  # per team, this round: furthest carry of the enemy flag toward home, in % (1 = picked up)
         self.decided_by: str | None = None  # ROUNDS | SCORE | SUDDEN_DEATH | OBJECTIVE | KILLS | DRAW
 
@@ -257,6 +278,20 @@ class Game:
         p = self.players.get(pid)
         if p:
             p.keys = {k: bool(keys.get(k)) for k in p.keys}
+            mx, my = keys.get("mx"), keys.get("my")
+            ok = all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) for v in (mx, my))
+            n = math.hypot(mx, my) if ok else 0
+            p.stick = (mx / n, my / n) if n > 1e-6 else None  # normalised: a stick never moves faster than keys
+
+    @staticmethod
+    def _dir(p: Player) -> tuple[float, float]:
+        """Unit move direction (or 0, 0): the touch stick if one is held, else the arrow keys."""
+        if p.stick:
+            return p.stick
+        k = p.keys
+        dx, dy = k["right"] - k["left"], k["down"] - k["up"]
+        n = math.hypot(dx, dy)
+        return (dx / n, dy / n) if n else (0.0, 0.0)
 
     def fire(self, pid: str, ax: float, ay: float, now: int) -> None:
         """Client sends only where it aims; origin, cooldown, weapon and direction are server-side."""
@@ -292,8 +327,7 @@ class Game:
         if kind == "DASH":
             if p.dash_until is not None and now < p.dash_until:
                 return
-            k = p.keys
-            dx, dy = k["right"] - k["left"], k["down"] - k["up"]
+            dx, dy = self._dir(p)
             n = math.hypot(dx, dy)
             if not n:  # standing still: dash toward the aim point
                 if d < 1e-6:
@@ -339,6 +373,7 @@ class Game:
                 self._finish(now, int(self.scores[1] > self.scores[0]), "SCORE")
                 return
             self.sudden_death = True  # whoever is down now stays down; a pending intermission still resets the arena
+            self.hold_ms = [0, 0]  # KOTH: the deciding point is a full second held from here
             for p in self.players.values():
                 p.respawn_at = None
         if now - self.started < self.intro_ms:
@@ -357,7 +392,10 @@ class Game:
             if p.alive:
                 self._move(p, t0, now)
         self._shots(max(0, now - t0) / 1000, now)
-        self._flags(now)
+        if self.mode == "CTF" and not self.ended:  # a TDM shot can end the match mid-tick
+            self._flags(now)
+        if self.mode == "KOTH" and not self.ended:
+            self._hill(max(0, now - t0), now)
 
     def _advance(self, p: Player, vx: float, vy: float, secs: float, step: float = MOVE_STEP) -> None:
         """Move at velocity (vx, vy) for `secs`, checking walls at least every `step` px so nothing tunnels.
@@ -381,11 +419,9 @@ class Game:
             secs -= on
             if t1 >= p.dash_until:
                 p.dash_from = p.dash_until = None
-        k = p.keys
-        dx, dy = k["right"] - k["left"], k["down"] - k["up"]
+        dx, dy = self._dir(p)
         if secs > 0 and (dx or dy):
-            n = math.hypot(dx, dy)
-            self._advance(p, dx / n * SPEED, dy / n * SPEED, secs, WALK_STEP)
+            self._advance(p, dx * SPEED, dy * SPEED, secs, WALK_STEP)
 
     def _shots(self, dt: float, now: int) -> None:
         """Each shot sweeps its whole path this tick and stops at the first thing along it."""
@@ -435,6 +471,12 @@ class Game:
         killer = self.players.get(by) if by else None
         if killer and killer.team != p.team:
             killer.kills += 1
+            if self.mode == "TDM" and not self.ended:
+                self.scores[killer.team] += 1
+                if self.sudden_death:
+                    self._finish(now, killer.team, "SUDDEN_DEATH")
+                elif self.scores[killer.team] >= KILLS_TO_WIN:
+                    self._finish(now, killer.team, "ROUNDS")
         if p.carrying_flag:
             f = self.flags[1 - p.team]
             f.state, f.carrier_id, f.x, f.y, f.dropped_at = "DROPPED", None, p.x, p.y, now
@@ -464,6 +506,29 @@ class Game:
                     self._score(p, now)
                     return
 
+    def hill(self, now: int) -> tuple[float, float]:
+        """The live hill. A pure function of the clock, so it needs no checkpointing."""
+        return HILLS[max(0, now - self.started - self.intro_ms) // HILL_MS % len(HILLS)]
+
+    def hill_teams(self, now: int) -> set[int]:
+        """Teams with an alive player on the live hill: one = holding, two = contested. Cloaked players count."""
+        hx, hy = self.hill(now)
+        return {p.team for p in self.players.values() if p.alive and math.hypot(p.x - hx, p.y - hy) <= HILL_R}
+
+    def _hill(self, ms: int, now: int) -> None:
+        on = self.hill_teams(now)
+        if len(on) != 1:
+            return
+        t = on.pop()
+        self.hold_ms[t] += ms
+        while self.hold_ms[t] >= 1000 and not self.ended:
+            self.hold_ms[t] -= 1000
+            self.scores[t] += 1
+            if self.sudden_death:
+                self._finish(now, t, "SUDDEN_DEATH")
+            elif self.scores[t] >= HILL_TO_WIN:
+                self._finish(now, t, "ROUNDS")
+
     def _score(self, p: Player, now: int) -> None:
         self.scores[p.team] += 1
         p.captures += 1
@@ -479,7 +544,7 @@ class Game:
         return [sum(p.kills for p in self.players.values() if p.team == t) for t in (0, 1)]
 
     def _tiebreak(self, now: int) -> None:
-        """HARD_STOP_MS with scores still level: objective progress, then kills, then a draw."""
+        """HARD_STOP_MS with scores still level: objective progress, then kills, then a draw (TDM: both stay level)."""
         for a, b, how in ((*self.scores, "SCORE"), (*self.progress, "OBJECTIVE"), (*self.team_kills(), "KILLS")):
             if a != b:
                 return self._finish(now, int(b > a), how)
@@ -509,6 +574,7 @@ class Game:
     def checkpoint(self, now: int) -> dict:
         return {
             "status": "ENDED" if self.ended else "PLAYING",
+            "mode": self.mode,
             "saved_at": now,
             "started": self.started,
             "winner": TEAMS[self.winner] if self.winner is not None else None,
@@ -545,7 +611,7 @@ class Game:
         """Rebuild from checkpoint(). Raises ValueError on an inconsistent checkpoint
         rather than inventing state. Checkpoints written before loadouts existed restore with the default."""
         teams = [[p for p in cp["players"] if p["team"] == t] for t in TEAMS]
-        g = cls(teams, cp["started"])
+        g = cls(teams, cp["started"], cp.get("mode", "CTF"))  # older checkpoints are all CTF
         g.last = now  # held keys and dashes are not persisted, and no catch-up step across the downtime
         for d in cp["players"]:
             p = g.players[d["id"]]
@@ -583,6 +649,7 @@ class Game:
         if not self.ended:
             raise ValueError("match has not ended")
         return {
+            "mode": self.mode,
             "winner": TEAMS[self.winner] if self.winner is not None else "TIE",  # stored results say TIE for a draw
             "scores": {TEAMS[t]: self.scores[t] for t in (0, 1)},
             "capturer": self.capturer,
@@ -649,6 +716,8 @@ class Game:
 
         return {
             "t": "state",
+            "mode": self.mode,
+            "target": TARGET[self.mode],
             "now": now,
             "elapsed": (now if self.ended_at is None else self.ended_at) - self.started,
             "matchMs": MATCH_MS,
@@ -664,7 +733,8 @@ class Game:
             "roundWinner": TEAMS[self.round_winner] if self.round_winner is not None else None,
             "capturer": self.capturer,
             "players": [row(p) for p in self.players.values()],
-            "flags": [
+            "hill": self._hill_row(now) if self.mode == "KOTH" else None,
+            "flags": [] if self.mode != "CTF" else [
                 {
                     "team": TEAMS[f.team],
                     "x": r(f.x),
@@ -682,6 +752,14 @@ class Game:
                 for b in self.barriers
             ],
         }
+
+
+    def _hill_row(self, now: int) -> dict:
+        on = self.hill_teams(now) if not self.ended else set()
+        hx, hy = self.hill(now)
+        since = max(0, now - self.started - self.intro_ms)
+        return {"x": hx, "y": hy, "r": HILL_R, "owner": TEAMS[min(on)] if len(on) == 1 else None, "contested": len(on) > 1,
+                "movesAt": now + HILL_MS - since % HILL_MS, "everyMs": HILL_MS}
 
 
 MAP = {
@@ -1052,6 +1130,15 @@ if __name__ == "__main__":  # self-check: python -m app.sim
     g.set_keys("r0", {"right": True})
     g.step(1000)
     assert g.players["r0"].x <= 230 - PLAYER_R, g.players["r0"].x
+    # Touch stick: any angle at walking speed (never faster), overriding keys; junk falls back to keys.
+    g = new()
+    put(g.players["r0"], 150, 350)
+    g.set_keys("r0", {"left": True, "mx": 3, "my": 1})  # unnormalised and against the keys: the stick wins
+    g.step(100)
+    sx, sy = g.players["r0"].x - 150, g.players["r0"].y - 350
+    assert abs(math.hypot(sx, sy) - SPEED * 0.1) < 0.01 and abs(sy / sx - 1 / 3) < 1e-6, (sx, sy)
+    g.set_keys("r0", {"right": True, "mx": float("nan"), "my": True})
+    assert g.players["r0"].stick is None
 
     # Kills: the default Assaulter (85 HP) dies to 7 rifle hits; the dead can't shoot; kill credit is the shooter's.
     g = new()
@@ -1294,4 +1381,80 @@ if __name__ == "__main__":  # self-check: python -m app.sim
     g.step(MATCH_MS)
     h = Game.restore(g.checkpoint(MATCH_MS), MATCH_MS)
     assert h.ended and h.winner == 0
+
+    # TDM: an enemy kill scores; flags are out of play; first to KILLS_TO_WIN wins.
+    def tdm():
+        g = Game([[{"id": "r0"}], [{"id": "b0"}]], 0, "TDM")
+        g.intro_ms = 0
+        return g
+
+    g = tdm()
+    r0, b0 = g.players["r0"], g.players["b0"]
+    assert g.snapshot(0)["flags"] == [] and g.snapshot(0)["mode"] == "TDM" and g.snapshot(0)["target"] == KILLS_TO_WIN
+    r0.x, r0.y = BASES[1]  # standing on the enemy flag picks nothing up
+    g.step(10)
+    assert not r0.carrying_flag and g.flags[1].state == "AT_BASE"
+    g._damage(b0, 20, "r0", b0.hp)
+    g._damage(r0, 20, None, r0.hp)  # no killer (or a teammate): no point
+    assert g.scores == [1, 0] and not g.ended
+    g.scores[0] = KILLS_TO_WIN - 1
+    b0.alive, b0.hp = True, b0.max_hp
+    g._damage(b0, 30, "r0", b0.hp)
+    assert g.ended and g.winner == 0 and g.decided_by == "ROUNDS" and g.result(30)["mode"] == "TDM"
+    h = Game.restore(g.checkpoint(30), 40)
+    assert h.mode == "TDM" and h.ended
+
+    # TDM: level at MATCH_MS -> next kill wins; still level at HARD_STOP_MS -> draw.
+    g = tdm()
+    g.step(MATCH_MS)
+    assert g.sudden_death and not g.ended
+    g._damage(g.players["r0"], MATCH_MS + 10, "b0", 999)
+    assert g.ended and g.winner == 1 and g.decided_by == "SUDDEN_DEATH"
+    g = tdm()
+    g.step(HARD_STOP_MS)
+    assert g.ended and g.winner is None and g.decided_by == "DRAW"
+
+    # KOTH: 1 point per second while exactly one team stands on the live hill; contested or empty scores nothing.
+    def koth():
+        g = Game([[{"id": "r0"}], [{"id": "b0"}]], 0, "KOTH")
+        g.intro_ms = 0
+        return g
+
+    for hx, hy in HILLS:
+        assert not _hits_wall(hx, hy, PLAYER_R), "hill centre inside a wall"
+    g = koth()
+    r0, b0 = g.players["r0"], g.players["b0"]
+    s0 = g.snapshot(0)
+    assert s0["flags"] == [] and s0["target"] == HILL_TO_WIN and s0["hill"]["owner"] is None and s0["hill"]["movesAt"] == HILL_MS
+    run(g, 0, 3000)
+    assert g.scores == [0, 0], "an empty hill scored"
+    put(r0, *HILLS[0])
+    run(g, 3000, 6000)
+    assert g.scores == [3, 0] and g.snapshot(6000)["hill"]["owner"] == "RED", g.scores
+    put(b0, HILLS[0][0] + 30, HILLS[0][1])
+    run(g, 6000, 9000)
+    assert g.scores == [3, 0] and g.snapshot(9000)["hill"]["contested"], "a contested hill scored"
+    g._damage(b0, 9000, "r0", b0.hp)  # dead bodies do not contest
+    run(g, 9000, 10_000)
+    assert g.scores == [4, 0]
+    run(g, 10_000, HILL_MS + 2000)  # the hill moved away from under r0
+    held = (HILL_MS - 10_000) // 1000  # the tick that straddles the move belongs to the new hill
+    assert g.hill(HILL_MS) == HILLS[1] and g.scores[0] in (3 + held, 4 + held) and g.scores[1] == 0, g.scores
+    g.scores[0] = HILL_TO_WIN - 1
+    put(r0, *HILLS[1])
+    run(g, HILL_MS + 2000, HILL_MS + 3100)
+    assert g.ended and g.winner == 0 and g.decided_by == "ROUNDS" and g.result(HILL_MS + 3100)["mode"] == "KOTH"
+    assert Game.restore(g.checkpoint(HILL_MS + 3100), HILL_MS + 3200).mode == "KOTH"
+
+    # KOTH: level at MATCH_MS -> next point wins; level at HARD_STOP_MS -> kills, then a draw.
+    g = koth()
+    g.step(MATCH_MS)
+    assert g.sudden_death and not g.ended
+    put(g.players["b0"], *g.hill(MATCH_MS))
+    run(g, MATCH_MS, MATCH_MS + 1100)
+    assert g.ended and g.winner == 1 and g.decided_by == "SUDDEN_DEATH"
+    g = koth()
+    g.players["r0"].kills = 1
+    g.step(HARD_STOP_MS)
+    assert g.ended and g.winner == 0 and g.decided_by == "KILLS"
     print("sim ok")

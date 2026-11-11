@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import type { HistoryItem, PlayerStats } from './api'
-import { MAX_PARTY, STATUS_LABEL, statLine, type Mode, type Player } from './data'
-import { Avatar, AvatarStatus, DashBorder, Frame, Icon, PageTitle, WorldArt } from './ui'
+import { MAX_PARTY, MODES, STATUS_LABEL, modeLabel, statLine, type Mode, type Player } from './data'
+import { Avatar, AvatarStatus, DashBorder, Frame, Icon, PageTitle, StatusDot, WorldArt } from './ui'
 
 export type View = 'home' | 'friends' | 'party' | 'profile'
 export interface Party {
@@ -85,23 +85,54 @@ function MatchmakeButton(c: Ctx & { className?: string }) {
   )
 }
 
-function FillToggle({ fill, setFill }: Pick<Ctx, 'fill' | 'setFill'>) {
+function Segmented<T>({ value, set, options, label, title, disabled }: { value: T; set: (v: T) => void; options: [T, string][]; label: string; title: string; disabled?: boolean }) {
   return (
-    <div title="Fill: open party slots are filled with players from other parties. No fill: your party queues as-is and faces a locked-size party." className="inline-grid grid-cols-2 rounded-lg border border-white/10 bg-ink-950/60 p-1" role="radiogroup" aria-label="Fill open slots">
-      {([true, false] as const).map((v) => (
+    <div title={title} className="inline-grid auto-cols-fr grid-flow-col rounded-lg border border-white/10 bg-ink-950/60 p-1" role="radiogroup" aria-label={label}>
+      {options.map(([v, text]) => (
         <button
           key={String(v)}
           role="radio"
-          aria-checked={fill === v}
-          onClick={() => setFill(v)}
-          className={`rounded-md px-4 py-1.5 font-display text-xs font-semibold tracking-widest uppercase transition ${
-            fill === v ? 'bg-ink-700 text-gold' : 'text-ink-300 hover:text-ink-100'
+          aria-checked={value === v}
+          disabled={disabled}
+          onClick={() => set(v)}
+          className={`rounded-md px-4 py-1.5 font-display text-xs font-semibold tracking-widest uppercase transition disabled:cursor-not-allowed ${
+            value === v ? 'bg-ink-700 text-gold' : 'text-ink-300 enabled:hover:text-ink-100'
           }`}
         >
-          {v ? 'Fill' : 'No fill'}
+          {text}
         </button>
       ))}
     </div>
+  )
+}
+
+/** Mode and fill pickers above the Matchmake button. Only the leader queues, so only the leader picks the mode. */
+function QueueOptions(c: Ctx) {
+  return (
+    <>
+      <div className="flex items-center justify-between gap-3">
+        <span className="label">Mode</span>
+        <Segmented
+          value={c.mode}
+          set={c.setMode}
+          options={MODES.map((m) => [m.id, m.short])}
+          label="Game mode"
+          title={c.isLeader ? MODES.map((m) => `${m.short}: ${m.name}`).join(' · ') : 'The party leader picks the mode'}
+          disabled={!c.isLeader}
+        />
+      </div>
+      <p key={c.mode} className="-mt-1 text-xs text-ink-300">{MODES.find((m) => m.id === c.mode)?.blurb}</p>
+      <div className="flex items-center justify-between gap-3">
+        <span className="label">Fill open slots</span>
+        <Segmented
+          value={c.fill}
+          set={c.setFill}
+          options={[[true, 'Fill'], [false, 'No fill']]}
+          label="Fill open slots"
+          title="Fill: open party slots are filled with players from other parties. No fill: your party queues as-is and faces a locked-size party."
+        />
+      </div>
+    </>
   )
 }
 
@@ -217,6 +248,8 @@ function InvitePicker({ c, onClose }: { c: Ctx; onClose: () => void }) {
   )
 }
 
+const STATUS_TEXT: Record<Player['status'], string> = { online: 'text-online', away: 'text-away', ingame: 'text-ingame', offline: 'text-ink-300' }
+
 function PartySlotCard({ c, s, first }: { c: Ctx; s: Slot; first: boolean }) {
   const [picking, setPicking] = useState(false)
   const base = 'relative flex min-h-72 flex-col items-center rounded-[10px] p-5 text-center transition'
@@ -256,20 +289,20 @@ function PartySlotCard({ c, s, first }: { c: Ctx; s: Slot; first: boolean }) {
       </div>
       <div className="relative mt-5">
         {!pending && <span className="absolute inset-0 rounded-full bg-ally/20 blur-2xl" />}
-        <Avatar name={p.name} size={96} dim={pending} />
+        <Avatar name={p.name} size={96} dim={pending || p.status === 'offline'} />
       </div>
       <p className="mt-4 font-display text-lg font-semibold">
         {p.name}
       </p>
       <p className="text-xs text-ink-300">#{p.tag}</p>
-      <p className={`mt-2 flex items-center gap-1.5 text-xs ${pending ? 'text-ink-300' : 'text-online'}`}>
+      <p className={`mt-2 flex items-center gap-1.5 text-xs ${pending ? 'text-ink-300' : STATUS_TEXT[p.status]}`}>
         {pending ? (
           <>
             <span className="size-1.5 animate-pulse rounded-full bg-gold" /> Invite sent…
           </>
         ) : (
           <>
-            <span className="size-1.5 rounded-full bg-online" /> {p.status === 'away' ? 'Away' : 'Online'}
+            <StatusDot status={p.status} className="!size-1.5 !ring-0" /> {STATUS_LABEL[p.status]}
           </>
         )}
       </p>
@@ -361,7 +394,7 @@ function LastMatch({ m }: { m?: HistoryItem }) {
         {mine != null && theirs != null && <span className="ml-2 text-ink-100">{mine}–{theirs}</span>}
       </p>
       <p className="mt-1 text-sm text-ink-300">
-        {m.me.kills} kills · {m.me.captures} captures · Capture the Flag
+        {m.me.kills} kills{m.mode === 'TDM' || m.mode === 'KOTH' ? '' : ` · ${m.me.captures} captures`} · {modeLabel(m.mode)}
       </p>
     </div>
   )
@@ -379,7 +412,7 @@ export function Home(c: Ctx) {
               <br />
               Queue together.
             </h1>
-            <p className="mt-3 text-ink-100/80">Up to 4v4 capture the flag.</p>
+            <p className="mt-3 text-ink-100/80">Up to 4v4 capture the flag, team deathmatch or king of the hill.</p>
             <div className="mt-6 flex items-center gap-4">
               <PartyStrip {...c} />
               <button onClick={() => c.setView('party')} className="text-xs font-semibold text-neon hover:underline">
@@ -389,10 +422,7 @@ export function Home(c: Ctx) {
           </div>
           <Frame cut={18} className="self-end shadow-2xl shadow-black/70 lg:mt-24">
             <div className="space-y-4 p-4">
-              <div className="flex items-center justify-between">
-                <span className="label">Fill open slots</span>
-                <FillToggle fill={c.fill} setFill={c.setFill} />
-              </div>
+              <QueueOptions {...c} />
               <MatchmakeButton {...c} />
             </div>
           </Frame>
@@ -419,9 +449,8 @@ export function PartyPage(c: Ctx) {
           </div>
           <div className="pointer-events-none mx-auto mt-6 h-px w-2/3 bg-gradient-to-r from-transparent via-neon/40 to-transparent" />
           <div className="mx-auto mt-6 flex max-w-md flex-col items-center gap-4">
-            <div className="flex w-full items-center justify-between">
-              <span className="label">Fill open slots</span>
-              <FillToggle fill={c.fill} setFill={c.setFill} />
+            <div className="w-full space-y-4">
+              <QueueOptions {...c} />
             </div>
             <MatchmakeButton {...c} className="w-full text-center" />
           </div>

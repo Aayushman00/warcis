@@ -91,7 +91,7 @@ export type QPlayer = { id: string; name: string; tag: string }
 export type TeamName = 'RED' | 'BLUE'
 export type ClassId = 'ASSAULTER' | 'GUARDIAN' | 'ASSASSIN'
 export type WeaponId = 'ASSAULT_RIFLE' | 'SHOTGUN' | 'SNIPER_RIFLE'
-/** How a match ended: first to 3, higher score at 10:00, a sudden-death capture, or the 12:00 tiebreak (objective, kills, draw). */
+/** How a match ended: first to 3 (TDM: 40 kills), higher score at 5:00, a sudden-death capture or kill, or the 6:00 tiebreak (objective, kills, draw). */
 export type DecidedBy = 'ROUNDS' | 'SCORE' | 'SUDDEN_DEATH' | 'OBJECTIVE' | 'KILLS' | 'DRAW'
 /** What a player takes into the match; chosen in the match lobby, stored and enforced by the server. */
 export interface Loadout {
@@ -147,9 +147,11 @@ export interface TeamDTO {
   players: QPlayer[]
   parties: { party_id: string; players: string[] }[]
 }
+/** SQUAD: matches made before modes existed; they were all Capture the Flag. */
+export type GameMode = 'CTF' | 'TDM' | 'KOTH' | 'SQUAD'
 export interface MatchDTO {
   match_id: string
-  mode: 'SQUAD'
+  mode: GameMode
   status: string
   created_at: string
   teams: TeamDTO[]
@@ -163,7 +165,7 @@ export interface MatchDTO {
   result: MatchResult | null // set once the game is over
 }
 export type QueueDTO = {
-  mode: 'SQUAD'
+  mode: GameMode
   fill: boolean
   party_id: string
   leader_id: string

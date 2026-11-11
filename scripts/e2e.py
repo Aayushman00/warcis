@@ -70,13 +70,13 @@ print("party")
 expect("NOT_FRIENDS", c.call, "POST", "/social/party/invitations", {"user_id": d.me["id"]})
 a.call("POST", "/social/party/invitations", {"user_id": b.me["id"]})
 expect("INVITE_PENDING", a.call, "POST", "/social/party/invitations", {"user_id": b.me["id"]})
-expect("INVITES_PENDING", a.call, "POST", "/matchmaking/queue", {"mode": "squad"})
+expect("INVITES_PENDING", a.call, "POST", "/matchmaking/queue", {"mode": "ctf"})
 inv = b.state()["invitations"][0]
 b.call("POST", f"/social/invitations/{inv['id']}/accept")
 pa, pb = a.state()["party"], b.state()["party"]
 assert pa["id"] == pb["id"] and len(pa["members"]) == 2 and pa["leader_id"] == a.me["id"]
 print("  ok  2 / 4 visible to both members")
-expect("NOT_LEADER", b.call, "POST", "/matchmaking/queue", {"mode": "squad"})
+expect("NOT_LEADER", b.call, "POST", "/matchmaking/queue", {"mode": "ctf"})
 expect("NOT_LEADER", b.call, "DELETE", f"/social/party/members/{a.me['id']}")
 a.invite_and_join(c)
 assert len(a.state()["party"]["members"]) == 3
@@ -105,8 +105,8 @@ b.invite_and_join(a)
 assert len(b.state()["party"]["members"]) == 4 and a.state()["party"]["leader_id"] == b.me["id"]
 
 print("matchmaking")
-s1 = b.call("POST", "/matchmaking/queue", {"mode": "squad"})
-s2 = b.call("POST", "/matchmaking/queue", {"mode": "squad"})  # idempotent
+s1 = b.call("POST", "/matchmaking/queue", {"mode": "ctf"})
+s2 = b.call("POST", "/matchmaking/queue", {"mode": "ctf"})  # idempotent
 assert s1["state"] == s2["state"] == "searching" and s1["queue"]["party_id"] == s2["queue"]["party_id"]
 assert a.status()["state"] == "searching"  # members see the party's queue state too
 print("  ok  premade 4 queued once (idempotent), members see searching")
@@ -115,10 +115,10 @@ print("  ok  premade 4 queued once (idempotent), members see searching")
 f, g, h = user("fin"), user("gus"), user("hal")
 e.befriend(f)
 e.invite_and_join(f)
-e.call("POST", "/matchmaking/queue", {"mode": "squad"})
+e.call("POST", "/matchmaking/queue", {"mode": "ctf"})
 assert e.status()["queue"]["size"] == 2
-g.call("POST", "/matchmaking/queue", {"mode": "squad"})
-h.call("POST", "/matchmaking/queue", {"mode": "squad"})
+g.call("POST", "/matchmaking/queue", {"mode": "ctf"})
+h.call("POST", "/matchmaking/queue", {"mode": "ctf"})
 m = wait_for(h.status, lambda s: s["state"] == "found")["match"]
 teams = [{p["id"] for p in t["players"]} for t in m["teams"]]
 premade = {x.me["id"] for x in (a, b, c, d)}
@@ -189,12 +189,12 @@ print("cross-db consistency")
 i, j = user("ivy"), user("jo")
 i.befriend(j)
 i.invite_and_join(j)
-i.call("POST", "/matchmaking/queue", {"mode": "squad"})
+i.call("POST", "/matchmaking/queue", {"mode": "ctf"})
 j.call("POST", "/social/party/leave")  # Postgres changes while the Mongo entry is WAITING
 wait_for(i.status, lambda s: s["state"] == "idle")
 print("  ok  stale queue entry invalidated after party changed in Postgres")
 k = user("kai")
-k.call("POST", "/matchmaking/queue", {"mode": "squad"})
+k.call("POST", "/matchmaking/queue", {"mode": "ctf"})
 k.call("DELETE", "/matchmaking/queue")
 k.call("DELETE", "/matchmaking/queue")  # idempotent
 assert k.status()["state"] == "idle"
@@ -202,8 +202,8 @@ print("  ok  solo queue + idempotent cancel")
 
 print("fill off")
 l, m2 = user("lea"), user("moe")
-l.call("POST", "/matchmaking/queue", {"mode": "squad", "fill": False})
-m2.call("POST", "/matchmaking/queue", {"mode": "squad", "fill": False})
+l.call("POST", "/matchmaking/queue", {"mode": "ctf", "fill": False})
+m2.call("POST", "/matchmaking/queue", {"mode": "ctf", "fill": False})
 found = wait_for(l.status, lambda s: s["state"] == "found")["match"]
 assert sorted(len(t["players"]) for t in found["teams"]) == [1, 1]
 l.call("PUT", f"/matchmaking/matches/{found['match_id']}/loadout", pick("ASSASSIN", "SHOTGUN"))
@@ -217,8 +217,8 @@ if os.environ.get("E2E_READY_TIMEOUT_S"):
     wait = int(os.environ["E2E_READY_TIMEOUT_S"])
     print(f"lobby timeout ({wait} s)")
     p, q = user("pat"), user("quin")
-    p.call("POST", "/matchmaking/queue", {"mode": "squad", "fill": False})
-    q.call("POST", "/matchmaking/queue", {"mode": "squad", "fill": False})
+    p.call("POST", "/matchmaking/queue", {"mode": "ctf", "fill": False})
+    q.call("POST", "/matchmaking/queue", {"mode": "ctf", "fill": False})
     lobby = wait_for(p.status, lambda s: s["state"] == "found")["match"]
     p.call("PUT", f"/matchmaking/matches/{lobby['match_id']}/loadout", pick("GUARDIAN", "SHOTGUN"))
     p.call("POST", f"/matchmaking/matches/{lobby['match_id']}/ready")  # quin never picks
@@ -235,8 +235,8 @@ if os.environ.get("E2E_LOBBY_DEADLINE"):  # needs docker compose: moves the dead
 
     print("lobby deadline (no ready or pick lands after lobby_ends_at, even before the matcher's next tick)")
     p, q = user("rhea"), user("sol")
-    p.call("POST", "/matchmaking/queue", {"mode": "squad", "fill": False})
-    q.call("POST", "/matchmaking/queue", {"mode": "squad", "fill": False})
+    p.call("POST", "/matchmaking/queue", {"mode": "ctf", "fill": False})
+    q.call("POST", "/matchmaking/queue", {"mode": "ctf", "fill": False})
     lobby = wait_for(p.status, lambda s: s["state"] == "found")["match"]
     mid = lobby["match_id"]
     for x in (p, q):

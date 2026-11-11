@@ -8,6 +8,8 @@
     CTF_CRASH=1 python scripts/ctf_e2e.py recovery   # same, but SIGKILL instead of a clean stop
     python scripts/ctf_e2e.py bots       # 1 human + 7 bots (docker compose --profile demo up -d bots)
     python scripts/ctf_e2e.py abilities  # classes: invisibility privacy, barrier, dash, over real sockets
+    python scripts/ctf_e2e.py tdm        # Team Deathmatch 1v1: separate queue, no flags, kills score
+    python scripts/ctf_e2e.py koth       # King of the Hill 1v1: holding the hill alone scores
 
 Stack running, bots stopped. Goes through nginx (:8080) -> gateway -> game-service, the
 same path a browser uses. Every player holds its own socket; the scenario checks that all
@@ -44,7 +46,7 @@ async def _bypass(mid: str, token: str) -> dict:
         return json.loads(await ws.recv())
 
 
-def form_match(n: int, pick=default_pick) -> tuple[str, list[Client], list[Client]]:
+def form_match(n: int, pick=default_pick, mode: str = "ctf") -> tuple[str, list[Client], list[Client]]:
     """Queue, then go through the lobby like a browser: pick class + weapon (pick(team, seat)), ready, countdown."""
     tag = uuid.uuid4().hex[:5]
     players = [Client().register(f"ctf{n}{i}{tag}", "password123") for i in range(2 * n)]
@@ -56,13 +58,14 @@ def form_match(n: int, pick=default_pick) -> tuple[str, list[Client], list[Clien
                 lead.befriend(mate)
                 lead.invite_and_join(mate)
     for lead in leaders:
-        lead.call("POST", "/matchmaking/queue", {"mode": "squad", "fill": fill})
+        lead.call("POST", "/matchmaking/queue", {"mode": mode, "fill": fill})
     for _ in range(30):
         s = players[0].status()
         if s["state"] == "found":
             break
         time.sleep(0.5)
     m = s["match"]
+    assert m["mode"] == mode.upper(), m["mode"]
     ids = {c.me["id"]: c for c in players}
     assert {p["id"] for t in m["teams"] for p in t["players"]} == set(ids), "match has players from outside this test"
     red = [ids[p["id"]] for p in m["teams"][0]["players"]]
@@ -201,11 +204,23 @@ async def play(mid: str, red: list[Client], blue: list[Client]) -> None:
         start = runner.me()
         await runner.walk([(start["x"], 350)] + LANE[1:])
         await runner.until(lambda st: runner.flag("BLUE")["carrierId"] == runner.id)
-        await runner.walk(list(reversed(LANE))[1:-1] + [RED_BASE])
+        await runner.walk(list(reversed(LANE))[1:-1] + [RED_BASE], stop=lambda st: st["scores"]["RED"] == 1)
         for s in seats:
             await s.until(lambda st: st["scores"]["RED"] == 1)
-            assert s.s["state"] == "PLAYING" and s.s["scores"]["BLUE"] == 0 and s.s["roundWinner"] == "RED"
+            assert s.s["state"] == "PLAYING" and s.s["scores"]["BLUE"] == 0 and s.s["roundWinner"] == "RED", {k: s.s.get(k) for k in ("state", "scores", "roundWinner", "round", "resumesAt", "now")}
         print(f"  capture -> RED scores round 1 (match continues) on all {2 * n} clients")
+
+        # Rounds 2 and 3: the arena resets after the intermission, nobody defends, the same runner captures again.
+        for k in (2, 3):
+            await runner.until(lambda st: st["round"] == k and st["resumesAt"] is None and runner.me()["alive"])
+            await runner.walk([(runner.me()["x"], 350)] + LANE[1:])
+            await runner.until(lambda st: runner.flag("BLUE")["carrierId"] == runner.id)
+            await runner.walk(list(reversed(LANE))[1:-1] + [RED_BASE], stop=lambda st: st["scores"]["RED"] == k)
+            await runner.until(lambda st: st["scores"]["RED"] == k)
+        for s in seats:
+            await s.until(lambda st: st["state"] == "ENDED")
+            assert s.s["winner"] == "RED" and s.s["decidedBy"] == "ROUNDS" and s.s["scores"] == {"RED": 3, "BLUE": 0}, s.s["scores"]
+        print(f"  3 captures -> ENDED, RED wins by rounds on all {2 * n} clients")
     finally:
         for p in pumps:
             p.cancel()
@@ -483,11 +498,11 @@ def run_abilities() -> None:
     print("ABILITIES E2E PASSED")
 
 
-def run_bots(max_s: float = 780) -> None:  # 12:00 hard stop + room for the restart
+def run_bots(max_s: float = 420) -> None:  # 6:00 hard stop + room for the restart
     """One passive human in a 4v4 with the 7 demo bots: bots must move, fight, take flags,
     survive a game-service restart (reconnect on their own) and finish the match."""
     human = Client().register(f"ctfh{uuid.uuid4().hex[:5]}", "password123")
-    human.call("POST", "/matchmaking/queue", {"mode": "squad", "fill": True})
+    human.call("POST", "/matchmaking/queue", {"mode": "ctf", "fill": True})
     for _ in range(90):
         try:
             human.call("POST", "/users/me/heartbeat")  # stale presence gets a queued party invalidated
@@ -587,7 +602,7 @@ def check_result_and_rematch(mid: str, red: list[Client], blue: list[Client]) ->
     by_id = {p["id"]: p for p in res["players"]}
     assert set(by_id) == {c.me["id"] for c in red + blue}
     assert all(p["outcome"] == ("WIN" if p["team"] == "RED" else "LOSS") for p in res["players"])
-    assert sum(p["captures"] for p in res["players"]) == 1 and by_id[res["capturer"]]["captures"] == 1
+    assert sum(p["captures"] for p in res["players"]) == 3 and by_id[res["capturer"]]["captures"] == 3
     assert all(p["class"] in CLASSES and p["weapon"] in WEAPONS for p in res["players"]), "the result records what each player played"
     assert by_id[red[0].me["id"]]["kills"] >= 1 and by_id[blue[0].me["id"]]["kills"] >= 1  # the combat steps in play()
     assert res["duration_ms"] > 0
@@ -613,7 +628,7 @@ def check_result_and_rematch(mid: str, red: list[Client], blue: list[Client]) ->
         c.call("POST", "/users/me/heartbeat")
     for lead in red:
         try:
-            lead.call("POST", "/matchmaking/queue", {"mode": "squad", "fill": fill})
+            lead.call("POST", "/matchmaking/queue", {"mode": "ctf", "fill": fill})
             break
         except ApiFail as e:
             assert e.code == "NOT_LEADER", e
@@ -625,6 +640,73 @@ def check_result_and_rematch(mid: str, red: list[Client], blue: list[Client]) ->
             assert c.status()["state"] == "searching"
     lead.call("DELETE", "/matchmaking/queue")
     print("  play again: party re-queued straight from the end screen")
+
+
+def run_tdm() -> None:
+    """1v1 TDM: a CTF solo never meets a TDM solo; kills score, there are no flags, the result says TDM."""
+    tag = uuid.uuid4().hex[:5]
+    ctf, tdm = Client().register(f"mix{tag}c", "password123"), Client().register(f"mix{tag}t", "password123")
+    ctf.call("POST", "/matchmaking/queue", {"mode": "ctf", "fill": False})
+    tdm.call("POST", "/matchmaking/queue", {"mode": "tdm", "fill": False})
+    time.sleep(2)
+    assert ctf.status()["state"] == tdm.status()["state"] == "searching", "different modes were matched together"
+    for c in (ctf, tdm):
+        c.call("DELETE", "/matchmaking/queue")
+    print("  ctf and tdm solos stay in separate queues")
+
+    mid, red, blue = form_match(1, mode="tdm")
+    print(f"1v1 TDM match {mid[:8]}")
+
+    async def fight():
+        sockets = [await websockets.connect(f"{WS}/{mid}?token={c.token}") for c in red + blue]
+        for ws in sockets:
+            assert json.loads(await ws.recv())["t"] == "hello"
+        R, B = Seat(red[0], sockets[0]), Seat(blue[0], sockets[1])
+        pumps = [asyncio.create_task(s.pump()) for s in (R, B)]
+        try:
+            await R.until(lambda st: all(p["connected"] for p in st["players"]))
+            st = R.s
+            assert st["mode"] == "TDM" and st["target"] == 40 and st["flags"] == [] and st["matchMs"] == 300_000, st
+            await asyncio.gather(R.walk([(60, 350), (500, 350), (500, 180)]), B.walk([(1140, 350), (700, 350), (700, 180)]))
+            await R.kill(B)
+            await B.until(lambda st: st["scores"] == {"RED": 1, "BLUE": 0})
+            print("  kill scored a point for the killer's team, seen by the victim too")
+        finally:
+            for p in pumps:
+                p.cancel()
+            for ws in sockets:
+                await ws.close()
+
+    asyncio.run(fight())
+    for c in red + blue:
+        c.call("POST", f"/matchmaking/matches/{mid}/leave")
+    print("TDM E2E PASSED")
+
+
+def run_koth() -> None:
+    """1v1 KOTH: own queue, no flags, a hill in the snapshot, standing on it alone scores a point a second."""
+    mid, red, blue = form_match(1, mode="koth")
+    print(f"1v1 KOTH match {mid[:8]}")
+
+    async def hold():
+        seats, pumps = await open_seats(mid, red + blue)
+        R = seats[0]
+        try:
+            await R.until(lambda st: all(p["connected"] for p in st["players"]))
+            st = R.s
+            assert st["mode"] == "KOTH" and st["target"] == 100 and st["flags"] == [] and st["hill"]["owner"] is None, st
+            await R.walk([(60, 350), (500, 350)])
+            h = R.s["hill"]  # read late: the hill may have moved during the intro and the walk
+            await R.walk([(500, h["y"]), (h["x"], h["y"])])
+            await seats[1].until(lambda st: st["scores"]["RED"] >= 2 and st["scores"]["BLUE"] == 0, timeout=20)
+            print("  standing alone on the hill scored for RED, seen by BLUE too")
+        finally:
+            await close_seats(seats, pumps)
+
+    asyncio.run(hold())
+    for c in red + blue:
+        c.call("POST", f"/matchmaking/matches/{mid}/leave")
+    print("KOTH E2E PASSED")
 
 
 def run(n: int) -> None:
@@ -640,4 +722,4 @@ def run(n: int) -> None:
 
 if __name__ == "__main__":
     for arg in sys.argv[1:] or ["1", "2", "4"]:
-        {"recovery": run_recovery, "bots": run_bots, "abilities": run_abilities}.get(arg, lambda: run(int(arg)))()
+        {"recovery": run_recovery, "bots": run_bots, "abilities": run_abilities, "tdm": run_tdm, "koth": run_koth}.get(arg, lambda: run(int(arg)))()

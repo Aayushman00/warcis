@@ -120,8 +120,11 @@ class Brain:
             return self._set_keys({})
         team = me["team"]
         pos = (me["x"], me["y"])
-        own = next(f for f in s["flags"] if f["team"] == team)
-        enemy_flag = next(f for f in s["flags"] if f["team"] != team)
+        # ponytail: TDM sends no flags; stand-ins at home make attackers push the enemy base and shoot on the way.
+        # Give TDM its own goal list (hunt the nearest enemy) if bots feel too passive there.
+        flags = s["flags"] or [{"team": b["team"], "state": "AT_BASE", "x": b["x"], "y": b["y"], "carrierId": None} for b in self.map["bases"]]
+        own = next(f for f in flags if f["team"] == team)
+        enemy_flag = next(f for f in flags if f["team"] != team)
         base = next((b["x"], b["y"]) for b in self.map["bases"] if b["team"] == team)
         # One defender per team (second bot by id); more than that stalemates 4v4 (defenders +
         # spawns next to base). Chosen among bots so a human never "takes" the defender slot.
@@ -135,7 +138,12 @@ class Brain:
         vis_ids = {e["id"] for e in visible}
         self.seen = {i: self.seen.get(i, now) for i in vis_ids}
 
-        if own["state"] == "CARRIED":
+        if s.get("hill"):  # KOTH: stand on the live hill; shooting on the way is handled below
+            goal = (s["hill"]["x"], s["hill"]["y"])
+        elif s.get("mode") == "TDM":  # no flags: hunt the nearest enemy we can see, else roam midfield
+            near = min(visible, key=lambda e: math.dist(pos, (e["x"], e["y"])), default=None)
+            goal = (near["x"], near["y"]) if near else self._patrol(team, None, now)
+        elif own["state"] == "CARRIED":
             goal = (own["x"], own["y"])  # 1/2: stop the carrier
         elif own["state"] == "DROPPED":
             goal = (own["x"], own["y"])  # 3: recover
@@ -252,12 +260,12 @@ if __name__ == "__main__":  # self-check against the real map/rules: python scri
         path = b.find_path((sx, sy), (1200 - sx, 350))
         assert all(b.clear(p, q, pad=14) for p, q in zip([(sx, sy)] + path, path)), "path cuts through a wall"
 
-    def play(n: int, seed: int, max_s: float = 740):  # past the 12:00 hard stop
+    def play(n: int, seed: int, max_s: float = 380, mode: str = "CTF"):  # past the 6:00 hard stop
         """Run bots-only n v n against the real sim at 30 Hz; bots think at 10 Hz."""
         rng = random.Random(seed)
         combos = [{"class": c, "weapon": w} for c in CLASS for w in WEAPON]  # every class and weapon appears, mixed
         pick = lambda i: combos[(i * 4 + seed) % len(combos)]  # noqa: E731
-        g = Game([[{"id": f"r{i}", **pick(i)} for i in range(n)], [{"id": f"b{i}", **pick(i + n)} for i in range(n)]], 0)
+        g = Game([[{"id": f"r{i}", **pick(i)} for i in range(n)], [{"id": f"b{i}", **pick(i + n)} for i in range(n)]], 0, mode)
         brains = {pid: Brain(pid, MAP, random.Random(rng.random()), CATALOG) for pid in g.players}
         seen = {"fire": 0, "deaths": 0, "stolen": 0, "q": {c: 0 for c in CLASS}}
         t = 0
@@ -294,4 +302,10 @@ if __name__ == "__main__":  # self-check against the real map/rules: python scri
         result = f"{TEAMS[g.winner]} won ({g.decided_by})" if g.winner is not None else "draw"
         print(f"{n}v{n} bots: {result} after {t / 1000:.0f}s game time, {seen['fire']} shots, {seen['deaths']} deaths, flag held {seen['stolen']} samples, Q {seen['q']}")
     assert all(used.values()), f"a class never used Q: {used}"
+    g, t, seen = play(4, seed=7, mode="TDM")
+    assert g.ended and seen["deaths"] > 0 and seen["stolen"] == 0, seen
+    print(f"4v4 TDM bots: {g.scores} after {t / 1000:.0f}s game time ({g.decided_by}), {seen['deaths']} deaths")
+    g, t, seen = play(4, seed=7, mode="KOTH")
+    assert g.ended and sum(g.scores) > 0 and seen["stolen"] == 0, (g.scores, seen)
+    print(f"4v4 KOTH bots: {g.scores} after {t / 1000:.0f}s game time ({g.decided_by}), {seen['deaths']} deaths")
     print("bot_ai ok")

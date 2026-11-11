@@ -35,8 +35,11 @@ export type GPlayer = {
 export type GFlag = { team: Team; x: number; y: number; state: 'AT_BASE' | 'CARRIED' | 'DROPPED'; carrierId: string | null; returnAt: number | null }
 export type GShot = { id: number; owner: string; team: Team; x: number; y: number; w: WeaponId }
 export type GBarrier = { id: number; owner: string; team: Team; x: number; y: number; w: number; h: number; hp: number; maxHp: number; expiresAt: number }
+/** King of the Hill: the live zone. owner = the one team standing on it; contested = both are. */
+export type GHill = { x: number; y: number; r: number; owner: Team | null; contested: boolean; movesAt: number; everyMs: number }
 export type Snapshot = {
   t: 'state'
+  hill?: GHill | null // KOTH only
   now: number
   elapsed: number
   matchMs: number // regulation; level scores there start sudden death
@@ -45,7 +48,7 @@ export type Snapshot = {
   state: 'PLAYING' | 'ENDED'
   winner: Team | null // ENDED with no winner = draw
   decidedBy: DecidedBy | null
-  progress: Record<Team, number> // furthest flag carry this round, % of the way home (the 12:00 tiebreak)
+  progress: Record<Team, number> // furthest flag carry this round, % of the way home (the 6:00 tiebreak)
   scores: Record<Team, number>
   round: number
   resumesAt: number | null // set while the intermission after a capture runs
@@ -132,6 +135,7 @@ export class Renderer {
   private map: GMap
   private me: string
   myAim: number | null = null
+  mePos: { x: number; y: number } | null = null // set each frame by the Predictor
   cooldowns: Record<string, number> = {} // class id -> Q cooldown ms, from the server's hello catalog
 
   constructor(map: GMap, me: string) {
@@ -211,9 +215,11 @@ export class Renderer {
       const from = q && q.x !== null && q.y !== null && Math.abs(q.x - p.x) + Math.abs(q.y - p.y) <= 80 ? { x: q.x, y: q.y } : null
       pos.set(p.id, from ? { x: from.x + (p.x - from.x) * k, y: from.y + (p.y - from.y) * k } : { x: p.x, y: p.y })
     }
+    if (this.mePos && pos.has(this.me)) pos.set(this.me, { ...this.mePos }) // me: predicted now, not interpolated 100 ms ago
     const mine = B.players.find((p) => p.id === this.me)
 
     this.drawBases(ctx, B, t, mine)
+    if (B.hill) this.drawHill(ctx, B.hill, t)
     for (const f of B.flags) {
       if (f.state === 'AT_BASE') this.drawStandingFlag(ctx, f.x, f.y, f.team, t)
       else if (f.state === 'DROPPED') this.drawDropped(ctx, f, t)
@@ -312,9 +318,32 @@ export class Renderer {
     ctx.restore()
   }
 
+  /** The hill: tinted by whoever holds it, dashed while contested, with an inner arc running down to its next move. */
+  private drawHill(ctx: CanvasRenderingContext2D, h: GHill, t: number) {
+    const c = h.owner ? TC[h.owner].base : '#FFFFFF'
+    const pulse = 0.5 + 0.5 * Math.sin(t / 240)
+    ctx.beginPath()
+    ctx.arc(h.x, h.y, h.r, 0, TAU)
+    ctx.fillStyle = alpha(c, h.owner ? 0.1 + 0.08 * pulse : 0.05)
+    ctx.fill()
+    ctx.strokeStyle = c
+    ctx.lineWidth = 2
+    ctx.globalAlpha = h.owner ? 0.9 : h.contested ? 0.5 + 0.4 * pulse : 0.45
+    ctx.setLineDash(h.contested ? [10, 8] : [])
+    ctx.lineDashOffset = -t / 50
+    ctx.stroke()
+    ctx.setLineDash([])
+    ctx.globalAlpha = 0.5
+    ctx.lineWidth = 3
+    ctx.beginPath()
+    ctx.arc(h.x, h.y, h.r - 7, -TAU / 4, -TAU / 4 + TAU * Math.max(0, Math.min(1, (h.movesAt - t) / h.everyMs)))
+    ctx.stroke()
+    ctx.globalAlpha = 1
+  }
+
   private drawBases(ctx: CanvasRenderingContext2D, s: Snapshot, t: number, mine?: GPlayer) {
     for (const b of this.map.bases) {
-      const home = s.flags.find((f) => f.team === b.team)?.state === 'AT_BASE'
+      const home = !s.flags.length || s.flags.find((f) => f.team === b.team)?.state === 'AT_BASE' // TDM: no flags, every base is calm
       const c = TC[b.team]
       // Carrier's own base: a stronger, breathing boundary says "bring it here".
       const target = mine?.alive && mine.carryingFlag && mine.team === b.team

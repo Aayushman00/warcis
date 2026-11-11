@@ -155,11 +155,18 @@ cd services/matchmaking-service && python -m app.services.stats     # → stats 
   never tunnel a wall or a barrier), damage, death, 3 s respawn, flag pickup / drop on death / return by own
   team / auto-return after 10 s, and capture.
 - **Winning:** a capture scores a round (4 s frozen reset between rounds); first to 3 wins, or the higher score
-  at 10:00. Level at 10:00 is **sudden death**: respawns stop (whoever is down stays down) and the next capture
-  wins. Still level at 12:00, the match is finalized: the team that carried the enemy flag furthest toward home
+  at 5:00. Level at 5:00 is **sudden death**: respawns stop (whoever is down stays down) and the next capture
+  wins. Still level at 6:00, the match is finalized: the team that carried the enemy flag furthest toward home
   this round wins (*objective progress*; a pickup counts as 1 %), then the team with more kills, else it is a
   **draw**. The result records how it was decided (`decided_by`); a draw (stored as winner `TIE`) is left out
   of career wins, losses, matches and win rate.
+- **Team Deathmatch** (queue mode `tdm`, its own queue): same arena and classes, flags out of play. Every enemy kill
+  scores 1; first to 40 wins, or the higher score at 5:00. Level at 5:00 is sudden death: the next kill wins. Still
+  level at 6:00 it is a draw. The party leader picks CTF, TDM or KOTH in the hub before queueing.
+- **King of the Hill** (queue mode `koth`, its own queue): flags out of play. One zone is live and swaps between the
+  pockets above and below the centre block every 30 s. A team standing on it alone scores 1 per second; first to 100
+  wins, or the higher score at 5:00. Level at 5:00 is sudden death: the next point wins. Still level at 6:00, kills
+  decide, else it is a draw.
 
 ### Match lobby, classes and weapons
 
@@ -451,3 +458,13 @@ unique constraints are the backstop if application code ever forgets a check.
 - Stats count finished matches only and are recomputed on every request (an indexed aggregation). If the
   match collection grows large, keep running totals per player in a `player_stats` collection, updated when
   the result is written.
+
+## Deploy with Cloudflare Tunnel
+
+1. Cloudflare Zero Trust > Networks > Tunnels > create tunnel (Docker). Copy the token.
+2. Add a public hostname (e.g. `game.example.com`) -> service `http://frontend:80`. WebSockets work by default.
+3. On the server: set strong secrets and `CLOUDFLARE_TUNNEL_TOKEN` in `.env`, then:
+   ```
+   docker compose -f docker-compose.yml -f docker-compose.prod.yml --profile cloudflare up -d --build
+   ```
+The prod override closes all host ports; traffic enters only via the tunnel. Needs Docker Compose >= 2.24 (`!reset`).
