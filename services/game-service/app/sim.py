@@ -63,7 +63,7 @@ CLASS = {
 }
 WEAPON = {
     "ASSAULT_RIFLE": {"cooldownMs": 160, "damage": 14, "pellets": 1, "spread": 0.0, "speed": 700, "ttlMs": 1100},
-    "SHOTGUN": {"cooldownMs": 850, "damage": 9, "pellets": 7, "spread": 0.36, "speed": 650, "ttlMs": 420},
+    "SHOTGUN": {"cooldownMs": 850, "damage": 9, "pellets": 7, "spread": 0.22, "speed": 650, "ttlMs": 420},
     "SNIPER_RIFLE": {"cooldownMs": 1500, "damage": 70, "pellets": 1, "spread": 0.0, "speed": 1600, "ttlMs": 900},
 }
 CATALOG = {"classes": CLASS, "weapons": WEAPON}  # sent in `hello` so the HUD can draw cooldowns; never trusted
@@ -880,9 +880,15 @@ if __name__ == "__main__":  # self-check: python -m app.sim
     put(r0, 600, 150), put(b0, 640, 150)
     g.fire("r0", 700, 150, 0)
     angles = [math.atan2(s.vy, s.vx) for s in g.shots]
-    assert len(g.shots) == 7 and angles == sorted(angles) and abs(angles[0] + angles[-1]) < 1e-9 and abs(angles[-1] - angles[0] - 0.36) < 1e-9
+    assert len(g.shots) == 7 and angles == sorted(angles) and abs(angles[0] + angles[-1]) < 1e-9 and abs(angles[-1] - angles[0] - 0.22) < 1e-9
     run(g, 0, 300)
     assert b0.hp == 140 - 7 * 9 and not g.shots, b0.hp
+    # ...and still at close-fight range (150 px): the fan must not be wider than a body there.
+    g = new(1, red=[lo("GUARDIAN", "SHOTGUN")], blue=[lo("GUARDIAN")])
+    put(g.players["r0"], 400, 150), put(g.players["b0"], 550, 150)
+    g.fire("r0", 550, 150, 0)
+    run(g, 0, 500)
+    assert g.players["b0"].hp == 140 - 7 * 9, g.players["b0"].hp
     # ...and at long range most of the volley misses (pellets also die after their short TTL).
     g = new(1, red=[lo("GUARDIAN", "SHOTGUN")], blue=[lo("GUARDIAN")])
     put(g.players["r0"], 400, 150), put(g.players["b0"], 800, 150)

@@ -34,7 +34,7 @@ const CLASS = {
 }
 const WEAPON = {
   ASSAULT_RIFLE: { cooldownMs: 160, damage: 14, pellets: 1, spread: 0, speed: 700, ttlMs: 1100 },
-  SHOTGUN: { cooldownMs: 850, damage: 9, pellets: 7, spread: 0.36, speed: 650, ttlMs: 420 },
+  SHOTGUN: { cooldownMs: 850, damage: 9, pellets: 7, spread: 0.22, speed: 650, ttlMs: 420 },
   SNIPER_RIFLE: { cooldownMs: 1500, damage: 70, pellets: 1, spread: 0, speed: 1600, ttlMs: 900 },
 }
 const SPEED = 220, PR = 14, SR = 4, RESPAWN_MS = 3000, FLAG_RETURN_MS = 10000, TOUCH = PR + 12, ROUNDS_TO_WIN = 3, MATCH_MS = 300000, TICK_MS = 33
