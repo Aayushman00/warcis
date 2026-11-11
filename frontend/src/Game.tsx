@@ -723,6 +723,8 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
     const ctx = c.getContext('2d')!
     const RING = 2 * Math.PI * 46
     let raf = 0
+    // Writing textContent replaces the text node even when the string is the same, and that costs a layout every frame.
+    const text = (el: HTMLElement | null, s: string) => void (el && el.textContent !== s && (el.textContent = s))
     const frame = () => {
       raf = requestAnimationFrame(frame)
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
@@ -738,10 +740,10 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
       const elapsed = s.state === 'ENDED' ? s.elapsed : s.elapsed - (s.now - t)
       const remaining = (s.suddenDeath ? s.hardStopMs : s.matchMs) - elapsed
       if (clockEl.current) {
-        clockEl.current.textContent = clock(remaining)
+        text(clockEl.current, clock(remaining))
         clockEl.current.parentElement?.classList.toggle('is-low', s.state === 'PLAYING' && remaining > 0 && remaining <= 10_000)
       }
-      if (s.resumesAt && resumeEl.current) resumeEl.current.textContent = String(Math.max(1, Math.ceil((s.resumesAt - t) / 1000)))
+      if (s.resumesAt) text(resumeEl.current, String(Math.max(1, Math.ceil((s.resumesAt - t) / 1000))))
       const mine = s.players.find((p) => p.id === me.id)
       if (skillEl.current) {
         const total = rend.current?.cooldowns[mine?.class ?? ''] ?? 0
@@ -753,7 +755,7 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
       }
       if (mine?.respawnAt) {
         const left = Math.max(0, mine.respawnAt - t)
-        if (respawnEl.current) respawnEl.current.textContent = (left / 1000).toFixed(1)
+        text(respawnEl.current, (left / 1000).toFixed(1))
         if (ringEl.current) ringEl.current.style.strokeDashoffset = String(RING * (1 - left / 3000))
       }
     }
