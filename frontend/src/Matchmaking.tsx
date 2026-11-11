@@ -1,7 +1,7 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import type { Loadout, MatchDTO, MMStatus, QPlayer, QueueDTO, TeamDTO } from './api'
 import { MAX_PARTY, modeLabel, type Player } from './data'
-import { Game, type Rematch } from './Game'
+import type { Rematch } from './Game'
 import { BUILD, CLASS_IDS, CLASS_INFO, WEAPON_IDS, WEAPON_INFO } from './game/classes'
 import { sfx } from './game/sfx'
 import { Armory, ClassAvatar } from './Loadout'
@@ -13,6 +13,10 @@ function playersOf(team: TeamDTO, meId: string): QPlayer[] {
   const rank = (p: QPlayer) => (p.id === meId ? 0 : mates.has(p.id) ? 1 : 2)
   return [...team.players].sort((a, b) => rank(a) - rank(b)) // stable: ties keep the server's order
 }
+
+// The match screen (renderer, prediction, touch controls) is its own chunk: fetched once you queue, not with the app.
+const loadGame = () => import('./Game')
+const Game = lazy(() => loadGame().then((m) => ({ default: m.Game })))
 
 const clock = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
 const EST_SECS = 30 // shown as the queue estimate; past it the screen says so
@@ -34,7 +38,13 @@ export function Matchmaking({
   onExit: (matchId: string) => void
   rematch: Rematch
 }) {
-  if (status.state === 'entered') return <Game match={status.match} me={me} onExit={() => onExit(status.match.match_id)} rematch={rematch} />
+  void loadGame() // in the queue or lobby: have the match screen ready before the arena opens (cached after the first call)
+  if (status.state === 'entered')
+    return (
+      <Suspense fallback={null}>
+        <Game match={status.match} me={me} onExit={() => onExit(status.match.match_id)} rematch={rematch} />
+      </Suspense>
+    )
   if (status.state === 'found' || status.state === 'countdown')
     return <Lobby key={status.match.match_id} match={status.match} me={me} onReady={onReady} onLoadout={onLoadout} onLeave={onExit} />
   return <Searching q={status.queue} me={me} onCancel={onCancel} />
