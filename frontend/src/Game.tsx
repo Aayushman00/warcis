@@ -718,8 +718,17 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
     const c = canvas.current
     if (!map || !c) return
     const dpr = Math.min(window.devicePixelRatio || 1, 2) // a 3x phone screen would draw 2.25x the pixels for little visible gain
-    c.width = map.w * dpr
-    c.height = map.h * dpr
+    // Backing store at the size the map is shown, never above map × dpr. A phone shows the 1200 px map ~800 px wide,
+    // so map × dpr meant clearing, filling and handing over 2.25x the pixels anyone sees, every frame.
+    let k = dpr
+    const fit = () => {
+      k = dpr * Math.min(1, c.clientWidth / map.w || 1)
+      c.width = Math.round(map.w * k)
+      c.height = Math.round(map.h * k)
+    }
+    fit()
+    const ro = new ResizeObserver(fit)
+    ro.observe(c)
     const ctx = c.getContext('2d')!
     const RING = 2 * Math.PI * 46
     let raf = 0
@@ -727,7 +736,7 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
     const text = (el: HTMLElement | null, s: string) => void (el && el.textContent !== s && (el.textContent = s))
     const frame = () => {
       raf = requestAnimationFrame(frame)
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+      ctx.setTransform(k, 0, 0, k, 0, 0)
       if (pred.current && rend.current) {
         pred.current.step(performance.now())
         rend.current.mePos = pred.current.pos
@@ -760,7 +769,10 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
       }
     }
     frame()
-    return () => cancelAnimationFrame(raf)
+    return () => {
+      cancelAnimationFrame(raf)
+      ro.disconnect()
+    }
   }, [map, me.id])
 
   useEffect(() => {
