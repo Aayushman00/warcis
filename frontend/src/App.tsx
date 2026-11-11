@@ -8,6 +8,9 @@ import { Profile } from './Profile'
 import { Avatar, AvatarStatus, Icon, Logo, StatusDot } from './ui'
 
 const POLL_MS = 1500 // ponytail: HTTP polling for social + queue state; move to SSE/WebSocket when load matters
+// In a match the game socket carries everything live; the poll only catches the end of it and social changes.
+// Slower there: 8 players at 1.5 s were ~11 HTTP requests a second per match beside the game traffic.
+const MATCH_POLL_MS = 5000
 const HEARTBEAT_MS = 10_000
 const PING_MS = 3000
 const STATS_MS = 30_000 // career stats change only when a match ends, so they are not part of the 1.5 s poll
@@ -91,18 +94,23 @@ function Launcher({ me, setMe }: { me: Player; setMe: (p: Player | null) => void
     lastNotice.current = notice
   }, [])
 
+  const inMatch = mm.state === 'entered'
   useEffect(() => {
-    // Polling pauses while the tab is hidden. The heartbeat keeps running: a missed one flips presence to
+    // Polling pauses while the tab is hidden. The heartbeat (below) keeps running: a missed one flips presence to
     // offline, which invalidates a queued party.
     const tick = () => void (document.hidden || refresh().catch(() => {}))
-    const beat = () => void api<Player>('/users/me/heartbeat', { method: 'POST' }).then(setMe).catch(() => {})
     tick()
-    beat()
-    const a = setInterval(tick, POLL_MS)
-    const b = setInterval(beat, HEARTBEAT_MS)
+    const a = setInterval(tick, inMatch ? MATCH_POLL_MS : POLL_MS)
     document.addEventListener('visibilitychange', tick) // catch up the moment the tab returns
-    return () => (clearInterval(a), clearInterval(b), document.removeEventListener('visibilitychange', tick))
-  }, [refresh, setMe])
+    return () => (clearInterval(a), document.removeEventListener('visibilitychange', tick))
+  }, [refresh, inMatch])
+
+  useEffect(() => {
+    const beat = () => void api<Player>('/users/me/heartbeat', { method: 'POST' }).then(setMe).catch(() => {})
+    beat()
+    const b = setInterval(beat, HEARTBEAT_MS)
+    return () => clearInterval(b)
+  }, [setMe])
 
   useEffect(() => {
     if (!toast) return
@@ -161,10 +169,9 @@ function Launcher({ me, setMe }: { me: Player; setMe: (p: Player | null) => void
 
   const wasInMatch = useRef(false)
   useEffect(() => {
-    const inMatch = mm.state === 'entered'
     if (wasInMatch.current && !inMatch) setStatsTick((n) => n + 1) // left the finished game: numbers moved
     wasInMatch.current = inMatch
-  }, [mm.state])
+  }, [inMatch])
 
   // Lobby ping: time a no-op round trip to the gateway. Off while queueing; the match has its own.
   useEffect(() => {
