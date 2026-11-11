@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties } from 'react'
+import { useEffect, useRef, useState, useSyncExternalStore, type CSSProperties } from 'react'
 import { token, type ClassId, type DecidedBy, type MatchDTO, type WeaponId } from './api'
 import { modeLabel, type Player } from './data'
 import './game/hud.css'
@@ -24,7 +24,7 @@ type Msg = Snapshot | { t: 'hello'; you: string; map: GMap; catalog: Catalog } |
 type Who = { name: string; team: Team }
 type FlagHud = { state: 'AT_BASE' | 'CARRIED' | 'DROPPED'; carrier: Who | null; returnAt: number | null }
 type Hud = {
-  me: (Who & { hp: number; maxHp: number; cls: ClassId; weapon: WeaponId; alive: boolean; carrying: boolean; killer: Who | null }) | null
+  me: (Who & { maxHp: number; cls: ClassId; weapon: WeaponId; alive: boolean; carrying: boolean; killer: Who | null }) | null
   roster: Record<Team, { id: string; alive: boolean; connected: boolean }[]>
   flags: Record<Team, FlagHud>
   hill: { owner: Team | null; contested: boolean } | null // King of the Hill only
@@ -143,7 +143,7 @@ function hudOf(s: Snapshot, meId: string): Hud {
     return f ? { state: f.state, carrier: who(f.carrierId), returnAt: f.returnAt } : { state: 'AT_BASE', carrier: null, returnAt: null } // TDM: no flags
   }
   return {
-    me: m ? { name: m.name, team: m.team, hp: m.hp, maxHp: m.maxHp, cls: m.class, weapon: m.weapon, alive: m.alive, carrying: m.carryingFlag, killer: m.alive ? null : who(m.killedBy) } : null,
+    me: m ? { name: m.name, team: m.team, maxHp: m.maxHp, cls: m.class, weapon: m.weapon, alive: m.alive, carrying: m.carryingFlag, killer: m.alive ? null : who(m.killedBy) } : null,
     roster,
     flags: { RED: flag('RED'), BLUE: flag('BLUE') },
     hill: s.hill ? { owner: s.hill.owner, contested: s.hill.contested } : null,
@@ -204,6 +204,44 @@ const FullscreenIcon = () => (
   </svg>
 )
 
+/** My HP, outside the HUD state: regen changes it ~15 times a second, and only the meter and the low-HP edge need to
+ *  redraw for that, not the whole match screen. */
+type HpStore = { get: () => number | null; set: (hp: number | null) => void; sub: (f: () => void) => () => void }
+function hpStore(): HpStore {
+  let v: number | null = null
+  const subs = new Set<() => void>()
+  return {
+    get: () => v,
+    set: (hp) => hp !== v && ((v = hp), subs.forEach((f) => f())),
+    sub: (f) => (subs.add(f), () => void subs.delete(f)),
+  }
+}
+
+function HpMeter({ store, maxHp }: { store: HpStore; maxHp: number }) {
+  const hp = useSyncExternalStore(store.sub, store.get) ?? maxHp
+  const [prev, setPrev] = useState(hp)
+  const [hit, setHit] = useState(false) // flash the bar when health drops
+  if (hp !== prev) {
+    setPrev(hp)
+    setHit(hp < prev)
+  }
+  const col = hp > maxHp / 2 ? color.hpHigh : hp > maxHp / 4 ? color.hpMid : color.hpLow
+  return (
+    <div className="g-hp" role="meter" aria-label="Health" aria-valuemin={0} aria-valuemax={maxHp} aria-valuenow={hp}>
+      <span className="g-hp-track" style={{ ['--hp' as string]: col } as CSSProperties}>
+        <i style={{ width: `${Math.max(0, Math.min(100, (hp / maxHp) * 100))}%` }} />
+        {hit && <b key={hp} className="g-hp-flash" />}
+      </span>
+      <span className="g-hp-num">{hp}</span>
+    </div>
+  )
+}
+
+function LowHp({ store, maxHp }: { store: HpStore; maxHp: number }) {
+  const hp = useSyncExternalStore(store.sub, store.get)
+  return hp !== null && hp <= maxHp / 4 ? <div className="g-lowhp" aria-hidden /> : null
+}
+
 /* Blue (always my team in this view) above red. Rank = position by the server's rating
    (2*captures + K/D) across both teams; rows within a team are in rank order. */
 function Board({ rows, compact, tdm }: { rows: Row[]; compact?: boolean; tdm?: boolean }) {
@@ -258,7 +296,7 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
   const respawnEl = useRef<HTMLSpanElement>(null)
   const resumeEl = useRef<HTMLElement>(null)
   const ringEl = useRef<SVGCircleElement>(null)
-  const lastHp = useRef<number | null>(null)
+  const [hpS] = useState(hpStore)
   const tl = useRef(new Timeline())
   const rend = useRef<Renderer | null>(null)
   const pred = useRef<Predictor | null>(null)
@@ -436,6 +474,7 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
     const onSnapshot = (s: Snapshot) => {
       tl.current.push(s)
       const m0 = s.players.find((p) => p.id === me.id)
+      hpS.set(m0 ? m0.hp : null)
       pred.current?.server(m0?.alive ? m0.x : null, m0?.alive ? m0.y : null, movable(s), performance.now())
       if (prev && s.now > prev.now) {
         const before = new Map(prev.players.map((p) => [p.id, p]))
@@ -653,7 +692,7 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
       window.removeEventListener('mousemove', mm)
       window.removeEventListener('mouseup', mu)
     }
-  }, [match.match_id, match.my_team, me.id, tdm, koth, ctf, touch])
+  }, [match.match_id, match.my_team, me.id, tdm, koth, ctf, touch, hpS])
 
   // Keep the screen on for the match: a phone held on two sticks, or a laptop on battery, otherwise dims mid-fight.
   useEffect(() => {
@@ -825,12 +864,6 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
 
   const won = final?.winner ? final.winner === (myTeam ?? 'BLUE') : null // everyone is shown as BLUE (see viewOf)
   const carrying = !!mine?.carrying && !hud?.ended
-  const hpHit = mine && lastHp.current !== null && mine.hp < lastHp.current // flash the bar when health drops
-  const hpColor = !mine ? color.hpHigh : mine.hp > mine.maxHp / 2 ? color.hpHigh : mine.hp > mine.maxHp / 4 ? color.hpMid : color.hpLow
-
-  useEffect(() => {
-    lastHp.current = mine?.hp ?? null
-  })
 
   return (
     <div className={`g-root ${touch ? 'is-touch' : ''}`} style={cssVars() as CSSProperties}>
@@ -853,7 +886,7 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
           <canvas ref={canvas} onContextMenu={(e) => e.preventDefault()} aria-label={`${modeName} arena`} />
 
           <div className="g-layer">
-            {mine?.alive && mine.hp <= mine.maxHp / 4 && !hud?.ended && <div className="g-lowhp" aria-hidden />}
+            {mine?.alive && !hud?.ended && <LowHp store={hpS} maxHp={mine.maxHp} />}
             <div className="g-feed" aria-live="polite">
               {feed.map((k) => (
                 <div key={k.id} className={`g-feed-row ${k.mine ? 'is-me' : ''}`}>
@@ -987,15 +1020,7 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
             <div className="g-me-name">{mine?.name ?? me.name}</div>
             {!mine?.alive && <div className={`g-me-state ${mine ? 'is-down' : ''}`}>{mine ? 'Eliminated' : 'Spectating'}</div>}
           </div>
-          {mine && (
-            <div className="g-hp" role="meter" aria-label="Health" aria-valuemin={0} aria-valuemax={mine.maxHp} aria-valuenow={mine.hp}>
-              <span className="g-hp-track" style={{ ['--hp' as string]: hpColor } as CSSProperties}>
-                <i style={{ width: `${Math.max(0, Math.min(100, (mine.hp / mine.maxHp) * 100))}%` }} />
-                {hpHit && <b key={mine.hp} className="g-hp-flash" />}
-              </span>
-              <span className="g-hp-num">{mine.hp}</span>
-            </div>
-          )}
+          {mine && <HpMeter store={hpS} maxHp={mine.maxHp} />}
         </div>
 
         {objective ? (
