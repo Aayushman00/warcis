@@ -19,4 +19,7 @@ async def ensure_indexes() -> None:
     await queue.create_index([("player_ids", ASCENDING), ("status", ASCENDING)])
     await matches.create_index([("match_id", ASCENDING)], unique=True)
     await matches.create_index([("player_ids", ASCENDING), ("created_at", DESCENDING)])
+    # The 1.5 s status poll asks "my match in these statuses, newest first". Without status in the key an idle
+    # player's poll read every match they ever played to find none.
+    await matches.create_index([("player_ids", ASCENDING), ("status", ASCENDING), ("created_at", DESCENDING)])
     await events.create_index([("match_id", ASCENDING), ("at", ASCENDING)])
