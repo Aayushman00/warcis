@@ -26,6 +26,7 @@ matchmaking's existing /leave flow ("Return to hub").
 """
 
 import asyncio
+import json
 import math
 import os
 import time
@@ -38,7 +39,7 @@ from warcis_common import loadout
 from warcis_common.errors import ApiError
 from warcis_common.security import decode_token
 
-from app.sim import CATALOG, MAP, MODES, TEAMS, Game
+from app.sim import CATALOG, MAP, MODES, Game
 
 TICK_HZ = 30
 CHECKPOINT_MS = 3000
@@ -68,9 +69,10 @@ class Room:
         self.saved_at = 0
         self.saving: asyncio.Task | None = None
 
-    def views(self, t: int) -> dict[int, dict]:
-        """One snapshot per team, built from the same state: what a team may not see is left out here."""
-        return {team: self.game.snapshot(t, self.sockets.keys(), self.bots, team) for team in (0, 1)}
+    def views(self, t: int) -> dict[int, str]:
+        """One snapshot per team, built from the same state: what a team may not see is left out here. Serialized
+        once per team, not once per socket: JSON encoding was the largest cost of a tick."""
+        return {team: _json(self.game.snapshot(t, self.sockets.keys(), self.bots, team)) for team in (0, 1)}
 
 
 # Rooms are in this process's memory (one replica). Checkpoints make a restart survivable.
@@ -169,9 +171,13 @@ async def recover_on_startup() -> None:
             await checkpoints.update_one({"match_id": mid}, {"$set": {"status": "ABANDONED", "reason": reason}})
 
 
-async def _send(ws: WebSocket, msg: dict) -> None:
+def _json(msg: dict) -> str:
+    return json.dumps(msg, separators=(",", ":"), ensure_ascii=False)  # what send_json writes
+
+
+async def _send(ws: WebSocket, msg: str) -> None:
     try:
-        await ws.send_json(msg)
+        await ws.send_text(msg)
     except Exception:
         pass  # socket closing; its reader loop cleans up
 
@@ -289,7 +295,7 @@ async def play(ws: WebSocket, match_id: str, token: str = "", bot: int = 0):
                 if isinstance(x, (int, float)) and isinstance(y, (int, float)) and math.isfinite(x) and math.isfinite(y):
                     g.ability(me.id, x, y, now_ms())
             elif msg.get("t") == "ping" and isinstance(msg.get("c"), (int, float)):
-                await _send(ws, {"t": "pong", "c": msg["c"]})  # client measures round-trip time
+                await _send(ws, _json({"t": "pong", "c": msg["c"]}))  # client measures round-trip time
     except (WebSocketDisconnect, ValueError, RuntimeError):
         pass
     finally:

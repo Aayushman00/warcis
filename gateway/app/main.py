@@ -79,7 +79,9 @@ async def proxy_ws(path: str, ws: WebSocket):
     """Pipe frames both ways. Auth is the game-service's job (JWT in ?token=)."""
     await ws.accept()
     try:
-        async with ws_connect(f"{GAME_WS_URL}/game/{path}?{ws.url.query}") as up:
+        # No deflate on the hop inside the docker network: it only made game-service compress every snapshot for each
+        # socket and this proxy inflate it again. The browser side still negotiates its own compression.
+        async with ws_connect(f"{GAME_WS_URL}/game/{path}?{ws.url.query}", compression=None) as up:
 
             async def client_to_game():
                 while True:
