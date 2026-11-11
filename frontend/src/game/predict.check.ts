@@ -1,5 +1,5 @@
 // Self-check for the client predictor: node --experimental-strip-types src/game/predict.check.ts
-import { Predictor } from './predict.ts'
+import { Predictor, spawnTracers, stepTracer } from './predict.ts'
 
 const assert = {
   ok(c: unknown, msg = 'check failed') {
@@ -49,5 +49,21 @@ p.server(900, 600, true, 2000)
 assert.deepEqual(p.pos, { x: 900, y: 600 })
 p.server(null, null, true, 2033)
 assert.equal(p.pos, null)
+
+// My shots: drawn at once from where I am, same fan as the server, stopped by walls / blockers / their range.
+const rifle = { speed: 700, pellets: 1, spread: 0, ttlMs: 1100 }
+const [s] = spawnTracers({ x: 100, y: 100 }, { x: 200, y: 100 }, 'ASSAULT_RIFLE', rifle, 0)
+assert.ok(stepTracer(s, 100, map, [], []) && Math.abs(s.x - 170) < 1e-9 && s.y === 100, `moved ${s.x}`)
+assert.ok(!stepTracer(s, 1000, map, [], []) && s.x < 600 - 4 + 1e-9 && s.x > 590, `wall at x=600 stops it, got ${s.x}`)
+const fan = spawnTracers({ x: 100, y: 100 }, { x: 200, y: 100 }, 'SHOTGUN', { speed: 650, pellets: 7, spread: 0.36, ttlMs: 420 }, 0)
+assert.equal(fan.length, 7)
+assert.ok(Math.abs(Math.atan2(fan[0].vy, fan[0].vx) + 0.18) < 1e-9 && Math.abs(Math.atan2(fan[6].vy, fan[6].vx) - 0.18) < 1e-9, 'fan spans the spread')
+assert.equal(spawnTracers({ x: 1, y: 1 }, { x: 1, y: 1 }, 'SHOTGUN', rifle, 0).length, 0) // aim on myself: no shot, like the server
+const [e] = spawnTracers({ x: 100, y: 300 }, { x: 200, y: 300 }, 'SNIPER_RIFLE', { speed: 1600, pellets: 1, spread: 0, ttlMs: 900 }, 0)
+assert.ok(!stepTracer(e, 200, map, [], [{ x: 250, y: 300, r: 14 }]) && e.x <= 250 - 14 - 4 + 1e-9 && e.x > 225, `an enemy stops it, got ${e.x}`)
+const [b] = spawnTracers({ x: 100, y: 500 }, { x: 200, y: 500 }, 'SNIPER_RIFLE', { speed: 1600, pellets: 1, spread: 0, ttlMs: 900 }, 0)
+assert.ok(!stepTracer(b, 200, map, [[300, 450, 12, 90]], []), 'a 12 px barrier stops even a sniper round in one long frame')
+const [r] = spawnTracers({ x: 100, y: 650 }, { x: 101, y: 650 }, 'ASSAULT_RIFLE', { ...rifle, speed: 100 }, 0)
+assert.ok(stepTracer(r, 1099, map, [], []) && !stepTracer(r, 1101, map, [], []), 'range runs out at ttlMs')
 
 console.log('predict ok')

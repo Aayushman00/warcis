@@ -17,8 +17,8 @@ import { Predictor, movable } from './game/predict'
 
 /** Numbers the server sends once in `hello`; the HUD only draws them (cooldown rings), the server enforces them. */
 type Catalog = {
-  classes: Record<ClassId, { hp: number; ability: string; cooldownMs: number; durationMs: number }>
-  weapons: Record<WeaponId, { speed: number; ttlMs: number }>
+  classes: Record<ClassId, { hp: number; fireMult: number; ability: string; cooldownMs: number; durationMs: number }>
+  weapons: Record<WeaponId, { cooldownMs: number; speed: number; ttlMs: number; pellets: number; spread: number }>
 }
 type Msg = Snapshot | { t: 'hello'; you: string; map: GMap; catalog: Catalog } | { t: 'error'; code: string; message: string } | { t: 'pong'; c: number }
 type Who = { name: string; team: Team }
@@ -315,6 +315,7 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
     const held = { up: false, down: false, left: false, right: false }
     let stick: { x: number; y: number } | null = null // touch move direction at any angle; wins over keys (server too)
     let weapons: Catalog['weapons'] | null = null
+    let classes: Catalog['classes'] | null = null
     const vel = new Map<string, { x: number; y: number }>() // px/s per player from the last two snapshots, for aim lead
     const send = (m: object) => ws?.readyState === WebSocket.OPEN && ws.send(JSON.stringify(m))
     const buzz = (p: number | number[]) => touch && navigator.vibrate?.(p) // phone haptics (Android; iOS Safari has no vibrate)
@@ -327,7 +328,20 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
       if (pred.current) pred.current.dir = stick ?? (n ? { x: kx / n, y: ky / n } : { x: 0, y: 0 })
       send({ t: 'input', ...held, ...(flip && { left: held.right, right: held.left }), ...(stick && { mx: flip ? -stick.x : stick.x, my: stick.y }) })
     }
-    const fire = (p: { x: number; y: number }) => send({ t: 'fire', x: flip ? dims.w - p.x : p.x, y: p.y })
+    let shotAt = -1e9 // last local tracer, gated by the same cooldown the server applies
+    const fire = (p: { x: number; y: number }) => {
+      send({ t: 'fire', x: flip ? dims.w - p.x : p.x, y: p.y })
+      const s = tl.current.latest()
+      const m = s?.players.find((q) => q.id === me.id)
+      const from = pred.current?.pos
+      const now = performance.now()
+      if (!s || !m?.alive || !from || !movable(s) || !weapons || !classes) return
+      // ponytail: client clock vs the server's receive time can disagree by a tick, so a rare tracer may differ from what the server fired
+      if (now - shotAt < Math.round(weapons[m.weapon].cooldownMs * classes[m.class].fireMult)) return
+      shotAt = now
+      rend.current?.fire(from, p, m.weapon, weapons[m.weapon], tl.current.renderTime())
+      sfx.shoot(true)
+    }
     /** Q: the class ability, aimed at the cursor like a shot. Whether it can happen at all is the server's call. */
     const cast = () => {
       const me0 = tl.current.latest()?.players.find((p) => p.id === me.id)
@@ -376,9 +390,9 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
       for (const s of b.shots) {
         if (known.has(s.id)) continue
         const shooter = byId.get(s.owner)
-        if (shooter && shooter.x !== null && shooter.y !== null) {
+        if (shooter && shooter.id !== me.id && shooter.x !== null && shooter.y !== null) {
           const [sx, sy] = [shooter.x, shooter.y]
-          r.at(t - 33, () => (r.shot(shooter.id, sx, sy, s.x - sx, s.y - sy, t - 33), sfx.shoot(shooter.id === me.id)))
+          r.at(t - 33, () => (r.shot(shooter.id, sx, sy, s.x - sx, s.y - sy, t - 33), sfx.shoot(false))) // mine played on click
         }
       }
       const whose = (t: Team) => (mine?.team === t ? 'your flag' : `the ${t.toLowerCase()} flag`)
@@ -456,6 +470,7 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
           const vm = viewMap(m.map, view)
           dims = vm
           weapons = m.catalog.weapons
+          classes = m.catalog.classes
           rend.current ??= new Renderer(vm, me.id)
           pred.current = new Predictor(vm) // fresh after a reconnect too: the old history is stale
           for (const [id, c] of Object.entries(m.catalog.classes)) rend.current.cooldowns[id] = c.cooldownMs

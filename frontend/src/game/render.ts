@@ -4,6 +4,7 @@
 
 import type { ClassId, DecidedBy, WeaponId } from '../api'
 import { drawAvatar, drawWeapon, gunOf } from './classes'
+import { spawnTracers, stepTracer, type ShotSpec, type Tracer } from './predict'
 import { alpha, color, font, team as TC, type Team } from './tokens'
 
 export type { Team }
@@ -132,6 +133,7 @@ export class Renderer {
   private rings: Ring[] = []
   private anim = new Map<string, Anim>()
   private pending: { at: number; run: () => void }[] = []
+  private tracers: Tracer[] = []
   private map: GMap
   private me: string
   myAim: number | null = null
@@ -153,6 +155,12 @@ export class Renderer {
     let a = this.anim.get(id)
     if (!a) this.anim.set(id, (a = { facing: 0, walk: 0, shotAt: -1e9, hitAt: -1e9, lastX: x, lastY: y, diedAt: -1e9, deathX: x, deathY: y }))
     return a
+  }
+
+  /** I fired: tracers, muzzle flash and recoil start now from where I am drawn, not when the server's copy shows up. */
+  fire(from: { x: number; y: number }, aim: { x: number; y: number }, w: WeaponId, spec: ShotSpec, t: number) {
+    this.tracers.push(...spawnTracers(from, aim, w, spec, t))
+    this.shot(this.me, from.x, from.y, aim.x - from.x, aim.y - from.y, t)
   }
 
   shot(pid: string, x: number, y: number, dx: number, dy: number, t: number) {
@@ -231,30 +239,21 @@ export class Renderer {
     const prevShots = new Map(A.shots.map((s) => [s.id, s]))
     ctx.lineCap = 'round'
     for (const s of B.shots) {
+      if (s.owner === this.me) continue // mine are the local tracers below
       const q = prevShots.get(s.id)
       if (!q) continue // appears next frame, from its real position
-      const x = q.x + (s.x - q.x) * k
-      const y = q.y + (s.y - q.y) * k
       const len = Math.hypot(s.x - q.x, s.y - q.y) || 1
-      const dx = (s.x - q.x) / len
-      const dy = (s.y - q.y) / len
-      const tail = s.w === 'SNIPER_RIFLE' ? 80 : s.w === 'SHOTGUN' ? 12 : 28
-      const g = ctx.createLinearGradient(x - dx * tail, y - dy * tail, x, y)
-      g.addColorStop(0, alpha(TC[s.team].base, 0))
-      g.addColorStop(1, TC[s.team].light)
-      ctx.strokeStyle = g
-      ctx.lineWidth = s.w === 'SNIPER_RIFLE' ? 2.2 : s.w === 'SHOTGUN' ? 2 : 3
-      ctx.beginPath()
-      ctx.moveTo(x - dx * tail, y - dy * tail)
-      ctx.lineTo(x, y)
-      ctx.stroke()
-      ctx.shadowColor = TC[s.team].base
-      ctx.shadowBlur = s.w === 'SNIPER_RIFLE' ? 14 : 8
-      ctx.fillStyle = '#FFFFFF'
-      ctx.beginPath()
-      ctx.arc(x, y, this.map.shotR - (s.w === 'SHOTGUN' ? 1.6 : 0.5), 0, TAU)
-      ctx.fill()
-      ctx.shadowBlur = 0
+      this.drawShot(ctx, q.x + (s.x - q.x) * k, q.y + (s.y - q.y) * k, (s.x - q.x) / len, (s.y - q.y) / len, s.w, s.team)
+    }
+    if (mine) {
+      const rects = B.barriers.filter((b) => b.team !== mine.team && b.hp > 0).map((b): [number, number, number, number] => [b.x, b.y, b.w, b.h])
+      const foes = B.players.filter((p) => p.alive && p.team !== mine.team && pos.has(p.id)).map((p) => ({ ...pos.get(p.id)!, r: this.map.playerR }))
+      this.tracers = this.tracers.filter((s) => {
+        const live = stepTracer(s, t, this.map, rects, foes)
+        const v = Math.hypot(s.vx, s.vy)
+        this.drawShot(ctx, s.x, s.y, s.vx / v, s.vy / v, s.w as WeaponId, mine.team)
+        return live
+      })
     }
 
     // Where the fallen went down, until they respawn.
@@ -280,6 +279,26 @@ export class Renderer {
     if (mine?.alive && mine.carryingFlag) this.drawHomeArrow(ctx, pos.get(mine.id)!, mine.team, t)
 
     this.drawEffects(ctx, t)
+  }
+
+  private drawShot(ctx: CanvasRenderingContext2D, x: number, y: number, dx: number, dy: number, w: WeaponId, team: Team) {
+    const tail = w === 'SNIPER_RIFLE' ? 80 : w === 'SHOTGUN' ? 12 : 28
+    const g = ctx.createLinearGradient(x - dx * tail, y - dy * tail, x, y)
+    g.addColorStop(0, alpha(TC[team].base, 0))
+    g.addColorStop(1, TC[team].light)
+    ctx.strokeStyle = g
+    ctx.lineWidth = w === 'SNIPER_RIFLE' ? 2.2 : w === 'SHOTGUN' ? 2 : 3
+    ctx.beginPath()
+    ctx.moveTo(x - dx * tail, y - dy * tail)
+    ctx.lineTo(x, y)
+    ctx.stroke()
+    ctx.shadowColor = TC[team].base
+    ctx.shadowBlur = w === 'SNIPER_RIFLE' ? 14 : 8
+    ctx.fillStyle = '#FFFFFF'
+    ctx.beginPath()
+    ctx.arc(x, y, this.map.shotR - (w === 'SHOTGUN' ? 1.6 : 0.5), 0, TAU)
+    ctx.fill()
+    ctx.shadowBlur = 0
   }
 
   private drawBarrier(ctx: CanvasRenderingContext2D, b: GBarrier, t: number) {

@@ -98,5 +98,46 @@ export class Predictor {
   }
 }
 
+/* My own shots, drawn the instant I fire from where I am drawn (predicted, "now"). The server's copies of them
+   live on the interpolated clock ~100 ms + a round trip behind, so while moving they appeared to leave from where
+   I used to be. These are cosmetic only: hits, damage and kills still come from the server. */
+
+type Rect = [number, number, number, number]
+export type ShotSpec = { speed: number; pellets: number; spread: number; ttlMs: number }
+export type Tracer = { x: number; y: number; vx: number; vy: number; born: number; at: number; ttl: number; w: string }
+
+/** Same deterministic fan as sim.fire; aiming at myself fires nothing, like the server. */
+export function spawnTracers(from: P, aim: P, w: string, spec: ShotSpec, t: number): Tracer[] {
+  const dx = aim.x - from.x
+  const dy = aim.y - from.y
+  if (Math.hypot(dx, dy) < 1e-6) return []
+  const base = Math.atan2(dy, dx)
+  const n = spec.pellets
+  return Array.from({ length: n }, (_, i) => {
+    const a = base + (n > 1 ? spec.spread * (i / (n - 1) - 0.5) : 0)
+    return { x: from.x, y: from.y, vx: Math.cos(a) * spec.speed, vy: Math.sin(a) * spec.speed, born: t, at: t, ttl: spec.ttlMs, w }
+  })
+}
+
+/** Advance to time t in steps of at most 6 px (nothing tunnels a 12 px barrier). False once it hits a wall,
+ *  the map edge, a rect or a circle, or its range runs out; it then stays at the last free point. */
+export function stepTracer(s: Tracer, t: number, map: GMap, rects: Rect[], circles: { x: number; y: number; r: number }[]): boolean {
+  const end = Math.min(t, s.born + s.ttl)
+  const secs = Math.max(0, end - s.at) / 1000
+  const R = map.shotR
+  const inRect = (x: number, y: number, [rx, ry, rw, rh]: Rect) => x > rx - R && x < rx + rw + R && y > ry - R && y < ry + rh + R
+  const n = Math.max(1, Math.ceil((Math.hypot(s.vx, s.vy) * secs) / 6))
+  for (let i = 0; i < n; i++) {
+    const x = s.x + (s.vx * secs) / n
+    const y = s.y + (s.vy * secs) / n
+    if (x < R || y < R || x > map.w - R || y > map.h - R || map.walls.some((w) => inRect(x, y, w)) || rects.some((r) => inRect(x, y, r)) || circles.some((c) => Math.hypot(x - c.x, y - c.y) < c.r + R))
+      return false
+    s.x = x
+    s.y = y
+  }
+  s.at = end
+  return t < s.born + s.ttl
+}
+
 /** Movement may happen: same gates as the server's step (intro, intermission, match over). */
 export const movable = (s: { state: string; elapsed: number; resumesAt: number | null }) => s.state === 'PLAYING' && s.elapsed >= INTRO_MS && !s.resumesAt
