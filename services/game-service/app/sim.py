@@ -28,6 +28,7 @@ PLAYER_R = 14
 SPEED = 220  # px/s
 SHOT_R = 4
 RESPAWN_MS = 3000
+REGEN_DELAY_MS, REGEN_PER_S = 5000, 15  # HP climbs once this long passes without taking damage
 FLAG_RETURN_MS = 10_000
 TOUCH = PLAYER_R + 12  # player-to-flag pickup distance
 BASE_R = 60
@@ -104,6 +105,7 @@ class Player:
     keys: dict = field(default_factory=lambda: {"up": False, "down": False, "left": False, "right": False})
     stick: tuple[float, float] | None = None  # touch: unit move direction at any angle; overrides keys when set
     last_fire: int = -10**9
+    hurt_at: int = -10**9  # last positive damage taken; regen waits REGEN_DELAY_MS after it
     killed_by: str | None = None  # display only: who landed the last hit, while dead
     kills: int = 0
     deaths: int = 0
@@ -387,6 +389,11 @@ class Game:
                 self._spawn(p)
             if p.invisible_until is not None and now >= p.invisible_until:
                 p.invisible_until = None
+            if p.alive and p.hp < p.max_hp:
+                # Whole points earned since regen began, minus those already earned by t0: integer, tick-size independent.
+                start = p.hurt_at + REGEN_DELAY_MS
+                gain = max(0, now - start) * REGEN_PER_S // 1000 - max(0, t0 - start) * REGEN_PER_S // 1000
+                p.hp = min(p.max_hp, p.hp + gain)
         self.barriers = [b for b in self.barriers if b.hp > 0 and now < b.expires_at]
         for p in self.players.values():
             if p.alive:
@@ -463,6 +470,7 @@ class Game:
             return
         self._reveal(p)  # any positive damage ends invisibility
         p.hp -= amount
+        p.hurt_at = now
         if p.hp > 0:
             return
         p.hp, p.alive, p.respawn_at, p.killed_by = 0, False, None if self.sudden_death else now + RESPAWN_MS, by
@@ -590,7 +598,7 @@ class Game:
                 {"id": p.id, "name": p.name, "team": TEAMS[p.team], "class": p.pclass, "weapon": p.weapon,
                  "x": p.x, "y": p.y, "hp": p.hp, "alive": p.alive, "respawnAt": p.respawn_at, "carryingFlag": p.carrying_flag,
                  "kills": p.kills, "deaths": p.deaths, "captures": p.captures,
-                 "abilityReadyAt": p.ability_ready_at, "invisibleUntil": p.invisible_until}
+                 "abilityReadyAt": p.ability_ready_at, "invisibleUntil": p.invisible_until, "hurtAt": p.hurt_at}
                 for p in self.players.values()
             ],
             "flags": [
@@ -619,6 +627,7 @@ class Game:
             p.hp = min(d["hp"], p.max_hp)
             p.kills, p.deaths, p.captures = d.get("kills", 0), d.get("deaths", 0), d.get("captures", 0)  # older checkpoints have none
             p.ability_ready_at, p.invisible_until = d.get("abilityReadyAt", 0), d.get("invisibleUntil")
+            p.hurt_at = d.get("hurtAt", -10**9)
         for f, d in zip(g.flags, sorted(cp["flags"], key=lambda d: TEAMS.index(d["team"]))):
             f.state, f.x, f.y, f.carrier_id = d["state"], d["x"], d["y"], d["carrierId"]
             f.dropped_at = d["returnAt"] - FLAG_RETURN_MS if d["state"] == "DROPPED" else None
@@ -828,6 +837,22 @@ if __name__ == "__main__":  # self-check: python -m app.sim
     g._damage(g.players["r0"], 0, "b0", 5)
     g.step(RESPAWN_MS)
     assert g.players["r0"].alive and g.players["r0"].hp == 140, "respawn restores the class's max HP"
+
+    # Regen: nothing for REGEN_DELAY_MS after a hit, then REGEN_PER_S; a new hit restarts the wait; same total for any tick size.
+    for dt in (33, 50, 7, 1000):
+        g = new(1, red=[lo("GUARDIAN")])
+        r0 = g.players["r0"]
+        g._damage(r0, 0, "b0", 100)  # 40 HP
+        run(g, 0, REGEN_DELAY_MS, dt)
+        assert r0.hp == 40, ("regen before the delay", dt, r0.hp)
+        run(g, REGEN_DELAY_MS, REGEN_DELAY_MS + 2000, dt)
+        assert r0.hp == 70, ("15 HP/s", dt, r0.hp)
+        g._damage(r0, REGEN_DELAY_MS + 2000, "b0", 10)  # 60 HP, wait restarts
+        run(g, REGEN_DELAY_MS + 2000, 2 * REGEN_DELAY_MS + 1999, dt)
+        assert r0.hp == 60, ("a hit did not restart the wait", dt, r0.hp)
+        run(g, 2 * REGEN_DELAY_MS + 1999, 2 * REGEN_DELAY_MS + 20_000, dt)
+        assert r0.hp == 140, ("regen overshot or stalled", dt, r0.hp)
+    assert Game.restore(g.checkpoint(0), 0).players["r0"].hurt_at == g.players["r0"].hurt_at
     assert new(1, red=[lo("GUARDIAN", "SHOTGUN")]).players["r0"].weapon == "SHOTGUN"  # class and weapon are independent
     g = new(2, red=[lo("GUARDIAN", "SHOTGUN"), lo("GUARDIAN", "SHOTGUN")])  # duplicates on a team are fine
     assert [p.pclass for p in g.players.values()][:2] == ["GUARDIAN", "GUARDIAN"]

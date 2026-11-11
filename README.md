@@ -154,6 +154,7 @@ cd services/matchmaking-service && python -m app.services.stats     # → stats 
 - Server decides movement, wall collision, projectiles (swept along their whole path each tick, so fast rounds
   never tunnel a wall or a barrier), damage, death, 3 s respawn, flag pickup / drop on death / return by own
   team / auto-return after 10 s, and capture.
+- **Regen:** 5 s without taking damage, then HP climbs 15 per second to the class max. Any hit restarts the 5 s wait.
 - **Winning:** a capture scores a round (4 s frozen reset between rounds); first to 3 wins, or the higher score
   at 5:00. Level at 5:00 is **sudden death**: respawns stop (whoever is down stays down) and the next capture
   wins. Still level at 6:00, the match is finalized: the team that carried the enemy flag furthest toward home
