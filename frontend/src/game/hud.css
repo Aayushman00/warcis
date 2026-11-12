@@ -176,6 +176,26 @@
 .g-banner-title::after { transform: scaleX(-1); }
 .g-banner-sub { font-size: 14px; font-weight: 500; color: var(--g-ink); text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8); }
 
+/* STALE lag meters, top left of the map: mine prominent, the enemy's small */
+.g-lag { position: absolute; top: var(--g-s3); left: var(--g-s3); display: flex; flex-direction: column; gap: 6px; width: 188px; padding: 8px 10px; background: color-mix(in srgb, var(--g-void) 72%, transparent); border-radius: var(--g-r-chip); box-shadow: inset 0 0 0 1px var(--g-rule); }
+.g-lag-own { --lag: var(--g-signal); display: grid; grid-template-columns: 1fr auto; column-gap: 8px; row-gap: 2px; }
+.g-lag-own.is-spiked { --lag: var(--g-hpLow); }
+.g-lag-label { font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--g-dim); white-space: nowrap; }
+.g-lag-state { font-size: 12px; font-weight: 700; color: var(--g-ink); white-space: nowrap; }
+.g-lag-own.is-off .g-lag-state { color: var(--lag); }
+.g-lag-own .g-lag-num { grid-column: 2; grid-row: 1 / 3; align-self: center; }
+.g-lag-own .g-lag-track { margin-top: 4px; }
+.g-lag-num { font-family: var(--g-font-display); font-weight: 700; font-size: 26px; line-height: 1; font-variant-numeric: tabular-nums; text-align: right; }
+.g-lag-num small { margin-left: 2px; font-size: 12px; font-weight: 600; color: var(--g-dim); }
+.g-lag-track { position: relative; grid-column: 1 / -1; display: block; height: 6px; overflow: hidden; border-radius: 2px; background: color-mix(in srgb, var(--g-ink) 12%, transparent); box-shadow: inset 0 0 0 1px var(--g-rule); }
+.g-lag-track i { position: absolute; inset: 0 auto 0 0; background: var(--lag, var(--g-dim)); transition: width var(--g-t-fast) linear, background var(--g-t-base); }
+.g-lag-track u { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--g-ink); opacity: 0.5; }
+.g-lag-foe { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 6px; }
+.g-lag-foe .g-lag-label { font-size: 10px; }
+.g-lag-foe .g-lag-track { grid-column: auto; height: 3px; }
+.g-lag-foe .g-lag-num { font-size: 13px; }
+.g-lag-foe .g-lag-num small { font-size: 10px; }
+
 /* status pill (reconnecting) */
 .g-pill { position: absolute; top: var(--g-s3); left: 50%; transform: translateX(-50%); padding: 6px var(--g-s3); font-size: 13px; font-weight: 600; color: var(--g-signal); background: color-mix(in srgb, var(--g-void) 80%, transparent); border-radius: var(--g-r-chip); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--g-signal) 45%, transparent); }
 
@@ -421,6 +441,12 @@
   .is-touch .g-ping { top: 7px; left: var(--g-safe-l); right: auto; min-width: 0; padding: 2px 6px; font-size: 12px; text-align: left; }
   .is-touch .g-feed { top: 6px; right: 6px; }
   .is-touch .g-feed-row { padding: 2px 6px; font-size: 11px; }
+  /* top left of the map: clear of the sticks (bottom corners) and the skill / emote buttons (right edge) */
+  .is-touch .g-lag { top: 6px; left: 6px; width: 132px; gap: 3px; padding: 4px 8px; }
+  .is-touch .g-lag-own .g-lag-num { font-size: 18px; }
+  .is-touch .g-lag-label { font-size: 9px; }
+  .is-touch .g-lag-state { font-size: 10px; }
+  .is-touch .g-lag-own .g-lag-track { margin-top: 2px; }
   .is-touch .g-banner { top: 10%; }
   .is-touch .g-banner-title { font-size: 26px; }
   .is-touch .g-banner-title::before, .is-touch .g-banner-title::after { width: 28px; }

@@ -6,7 +6,7 @@ import './index.css'
 import type { ClassId, MatchDTO, WeaponId } from './api'
 import type { Player } from './data'
 import { CLASS_IDS, WEAPON_IDS } from './game/classes'
-import type { GFlag, GMap, GPlayer, GShot, Snapshot, Team } from './game/render'
+import type { GFlag, GMap, GPickup, GPlayer, GShot, Snapshot, Team } from './game/render'
 import { Game } from './Game'
 
 const ME: Player = { id: 'me', name: 'You', tag: '0001', status: 'online' }
@@ -15,6 +15,8 @@ const ids = names.map((_, i) => (i ? `p${i}` : 'me'))
 const q = new URLSearchParams(location.search)
 const myClass = (q.get('class') as ClassId) || 'ASSAULTER'
 const myWeapon = (q.get('weapon') as WeaponId) || 'ASSAULT_RIFLE'
+const KOTH = q.get('mode') === 'koth'
+const STALE = q.get('mode') === 'stale'
 
 // Copied from services/game-service/app/sim.py (MAP, CATALOG). Team 0 = RED on the left.
 const ys = [210, 260, 440, 490]
@@ -74,6 +76,8 @@ function createSim(onState: (s: Snapshot) => void) {
   let state: 'PLAYING' | 'ENDED' = 'PLAYING'
   let winner: Team | null = null
   let capturer: string | null = null
+  // Copied from sim.py PICKUPS; the bottom Spike and the right Sync start out respawning so both looks are on screen.
+  const pickups: GPickup[] = !STALE ? [] : ([['SPIKE', 600, 110], ['SPIKE', 600, 590], ['SYNC', 340, 350], ['SYNC', 860, 350]] as const).map(([kind, x, y], i) => ({ id: i + 1, kind, x, y, readyAt: i % 2 ? t0 + PICKUP_MS[kind] : 0 }))
 
   const move = (p: P, dx: number, dy: number) => {
     if (!hitsWall(p.x + dx, p.y, PR)) p.x += dx
@@ -147,8 +151,9 @@ function createSim(onState: (s: Snapshot) => void) {
         move(p, p.vx * dt, p.vy * dt)
         p.dashing = now < p.dashUntil
         p.invisible = now < p.invisUntil
+        for (const k of pickups) if (now >= k.readyAt && Math.hypot(k.x - p.x, k.y - p.y) <= TOUCH) k.readyAt = now + PICKUP_MS[k.kind]
         for (const f of flags) {
-          if (Math.hypot(f.x - p.x, f.y - p.y) > TOUCH) continue
+          if (STALE || Math.hypot(f.x - p.x, f.y - p.y) > TOUCH) continue // STALE: no flags, so no captures end the run
           if (f.team !== p.team && f.state !== 'CARRIED' && !p.carryingFlag) {
             Object.assign(f, { state: 'CARRIED', carrierId: p.id, returnAt: null })
             p.carryingFlag = true
@@ -192,10 +197,11 @@ function createSim(onState: (s: Snapshot) => void) {
       progress: { RED: 0, BLUE: 0 }, // ponytail: the 6:00 tiebreak progress is not simulated
       scores: { ...scores }, round, resumesAt: null, roundWinner: null, capturer,
       players: players.map(({ vx: _a, vy: _b, nextFire: _c, invisUntil: _d, dashUntil: _e, held: _f, ...p }) => p),
-      flags: flags.map((f) => ({ ...f })),
+      flags: STALE ? [] : flags.map((f) => ({ ...f })),
       shots: shots.map(({ vx: _a, vy: _b, dmg: _c, exp: _d, ...s }) => s),
       barriers: [],
       hill: KOTH ? hill(now) : null,
+      ...(STALE && { ...staleView(now - t0), pickups: pickups.map((k) => ({ ...k })) }),
     })
   }
   // ponytail: ?mode=koth shows the zone and who holds it; hill points are not simulated here
@@ -219,7 +225,18 @@ function createSim(onState: (s: Snapshot) => void) {
   return { handle, stop: () => clearInterval(timer) }
 }
 
-const KOTH = new URLSearchParams(location.search).get('mode') === 'koth'
+/* ponytail: ?mode=stale scripts lag / behind instead of running a view clock (enemies stay live), enough to see every
+   look. Five 2.5 s phases loop: zero, stalled (lag 700, behind rising), catchup (behind > lag), spiked (lag 1700),
+   sync (0). &state=<phase> pins one, replaying its 2.5 s. I am server team RED (my_team 0). */
+const PHASES = ['zero', 'stalled', 'catchup', 'spiked', 'sync'] as const
+const PHASE_MS = 2500
+const PICKUP_MS = { SPIKE: 25_000, SYNC: 12_000 }
+const staleView = (el: number) => {
+  const ph = PHASES.find((p) => p === q.get('state')) ?? PHASES[Math.floor(el / PHASE_MS) % PHASES.length]
+  const u = el % PHASE_MS
+  const [lag, behind] = ph === 'stalled' ? [700, 0.25 * u] : ph === 'catchup' ? [300, 700 - 0.15 * u] : ph === 'spiked' ? [1700, 700 + 0.4 * u] : [0, 0]
+  return { lag: { RED: lag, BLUE: 250 }, behind: { RED: Math.round(behind), BLUE: 250 } }
+}
 
 class FakeWS {
   static OPEN = 1
@@ -244,7 +261,7 @@ class FakeWS {
 
 const match = {
   match_id: 'sandbox',
-  mode: KOTH ? 'KOTH' : 'SQUAD',
+  mode: KOTH ? 'KOTH' : STALE ? 'STALE' : 'SQUAD',
   status: 'ENTERED',
   created_at: new Date().toISOString(),
   teams: [0, 1].map((t) => ({ players: ids.slice(t * 4, t * 4 + 4).map((id, i) => ({ id, name: names[t * 4 + i], tag: id })), parties: [] })),

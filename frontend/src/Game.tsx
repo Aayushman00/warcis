@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useSyncExternalStore, type CSSProperties }
 import { token, type ClassId, type DecidedBy, type MatchDTO, type WeaponId } from './api'
 import { modeLabel, type Player } from './data'
 import './game/hud.css'
-import { Renderer, Timeline, type GMap, type Snapshot } from './game/render'
+import { LAG_CEIL_MS, LAG_MAX_MS, Renderer, Timeline, staleState, type GMap, type Snapshot } from './game/render'
 import { isMuted, setMuted, sfx, unlockAudio } from './game/sfx'
 import { color, cssVars, other, type Team } from './game/tokens'
 import { ClassAvatar } from './Loadout'
@@ -115,12 +115,16 @@ function viewMap(m: GMap, v: View): GMap {
 function viewSnap(s: Snapshot, w: number, v: View): Snapshot {
   const t = (x: Team) => (v.swap ? other(x) : x)
   const x = (x: number) => (v.mirror ? w - x : x)
+  const sw = <T,>(r: Record<Team, T>) => (v.swap ? { RED: r.BLUE, BLUE: r.RED } : r)
   return {
     ...s,
     winner: s.winner && t(s.winner),
     roundWinner: s.roundWinner && t(s.roundWinner),
-    scores: v.swap ? { RED: s.scores.BLUE, BLUE: s.scores.RED } : s.scores,
-    progress: v.swap ? { RED: s.progress.BLUE, BLUE: s.progress.RED } : s.progress,
+    scores: sw(s.scores),
+    progress: sw(s.progress),
+    lag: s.lag && sw(s.lag),
+    behind: s.behind && sw(s.behind),
+    pickups: s.pickups?.map((q) => ({ ...q, x: x(q.x) })),
     players: s.players.map((p) => ({ ...p, team: t(p.team), x: p.x === null ? null : x(p.x) })),
     flags: s.flags.map((f) => ({ ...f, team: t(f.team), x: x(f.x) })),
     hill: s.hill && { ...s.hill, x: x(s.hill.x), owner: s.hill.owner && t(s.hill.owner) },
@@ -204,10 +208,10 @@ const FullscreenIcon = () => (
   </svg>
 )
 
-/** My HP, outside the HUD state: regen changes it ~15 times a second, and only the meter and the low-HP edge need to
- *  redraw for that, not the whole match screen. */
-type HpStore = { get: () => number | null; set: (hp: number | null) => void; sub: (f: () => void) => () => void }
-function hpStore(): HpStore {
+/** A number outside the HUD state, e.g. my HP: regen changes it ~15 times a second, and only the meter and the low-HP
+ *  edge need to redraw for that, not the whole match screen. STALE lag uses the same for the same reason. */
+type NumStore = { get: () => number | null; set: (hp: number | null) => void; sub: (f: () => void) => () => void }
+function numStore(): NumStore {
   let v: number | null = null
   const subs = new Set<() => void>()
   return {
@@ -217,7 +221,7 @@ function hpStore(): HpStore {
   }
 }
 
-function HpMeter({ store, maxHp }: { store: HpStore; maxHp: number }) {
+function HpMeter({ store, maxHp }: { store: NumStore; maxHp: number }) {
   const hp = useSyncExternalStore(store.sub, store.get) ?? maxHp
   const [prev, setPrev] = useState(hp)
   const [hit, setHit] = useState(false) // flash the bar when health drops
@@ -237,9 +241,48 @@ function HpMeter({ store, maxHp }: { store: HpStore; maxHp: number }) {
   )
 }
 
-function LowHp({ store, maxHp }: { store: HpStore; maxHp: number }) {
+function LowHp({ store, maxHp }: { store: NumStore; maxHp: number }) {
   const hp = useSyncExternalStore(store.sub, store.get)
   return hp !== null && hp <= maxHp / 4 ? <div className="g-lowhp" aria-hidden /> : null
+}
+
+/** STALE: how far behind each team sees the enemy. Mine is the big one (with frozen / catching-up), the enemy's small.
+ *  The bar fills to the Spike ceiling; the tick marks the cap that damage alone can reach. */
+type LagStores = { mine: NumStore; behind: NumStore; foe: NumStore }
+function LagMeters({ s }: { s: LagStores }) {
+  const lag = useSyncExternalStore(s.mine.sub, s.mine.get) ?? 0
+  const behind = useSyncExternalStore(s.behind.sub, s.behind.get) ?? 0
+  const foe = useSyncExternalStore(s.foe.sub, s.foe.get) ?? 0
+  const state = staleState(lag, behind)
+  const word = state === 'stall' ? 'Frozen' : state === 'catch' ? 'Catching up' : lag || behind ? 'Steady' : 'In sync'
+  const pct = (ms: number) => `${Math.min(100, (ms / LAG_CEIL_MS) * 100)}%`
+  const meter = (label: string, ms: number, extra?: string) => ({ role: 'meter', 'aria-label': label, 'aria-valuemin': 0, 'aria-valuemax': LAG_CEIL_MS, 'aria-valuenow': ms, 'aria-valuetext': `${ms} ms${extra ? `, ${extra}` : ''}` })
+  return (
+    <div className="g-lag">
+      <div className={`g-lag-own ${lag > LAG_MAX_MS ? 'is-spiked' : ''} ${state ? 'is-off' : ''}`} {...meter('Your view delay', lag, word.toLowerCase())}>
+        <span className="g-lag-label">Your view</span>
+        <span className="g-lag-state">{word}</span>
+        <span className="g-lag-num">
+          {lag}
+          <small>ms</small>
+        </span>
+        <span className="g-lag-track">
+          <i style={{ width: pct(lag) }} />
+          <u style={{ left: pct(LAG_MAX_MS) }} />
+        </span>
+      </div>
+      <div className="g-lag-foe" {...meter('Enemy view delay', foe)}>
+        <span className="g-lag-label">Enemy view</span>
+        <span className="g-lag-track">
+          <i style={{ width: pct(foe) }} />
+        </span>
+        <span className="g-lag-num">
+          {foe}
+          <small>ms</small>
+        </span>
+      </div>
+    </div>
+  )
 }
 
 /* Blue (always my team in this view) above red. Rank = position by the server's rating
@@ -296,7 +339,8 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
   const respawnEl = useRef<HTMLSpanElement>(null)
   const resumeEl = useRef<HTMLElement>(null)
   const ringEl = useRef<SVGCircleElement>(null)
-  const [hpS] = useState(hpStore)
+  const [hpS] = useState(numStore)
+  const [lagS] = useState((): LagStores => ({ mine: numStore(), behind: numStore(), foe: numStore() }))
   const tl = useRef(new Timeline())
   const rend = useRef<Renderer | null>(null)
   const pred = useRef<Predictor | null>(null)
@@ -317,6 +361,7 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
   const touchApi = useRef<TouchApi | null>(null)
   const tdm = match.mode === 'TDM' || match.mode === 'STALE'
   const koth = match.mode === 'KOTH'
+  const stale = match.mode === 'STALE'
   const ctf = !tdm && !koth // includes SQUAD, the pre-modes name
   const modeName = modeLabel(match.mode)
   const skillEl = useRef<HTMLButtonElement>(null)
@@ -475,6 +520,10 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
       tl.current.push(s)
       const m0 = s.players.find((p) => p.id === me.id)
       hpS.set(m0 ? m0.hp : null)
+      const myT = m0?.team ?? 'BLUE' // everyone is BLUE in this view (see viewOf)
+      lagS.mine.set(s.lag?.[myT] ?? 0)
+      lagS.behind.set(s.behind?.[myT] ?? 0)
+      lagS.foe.set(s.lag?.[other(myT)] ?? 0)
       pred.current?.server(m0?.alive ? m0.x : null, m0?.alive ? m0.y : null, movable(s), performance.now())
       if (prev && s.now > prev.now) {
         const before = new Map(prev.players.map((p) => [p.id, p]))
@@ -696,7 +745,7 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
       window.removeEventListener('mousemove', mm)
       window.removeEventListener('mouseup', mu)
     }
-  }, [match.match_id, match.my_team, me.id, tdm, koth, ctf, touch, hpS])
+  }, [match.match_id, match.my_team, me.id, tdm, koth, ctf, touch, hpS, lagS])
 
   // Keep the screen on for the match: a phone held on two sticks, or a laptop on battery, otherwise dims mid-fight.
   useEffect(() => {
@@ -905,6 +954,7 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
 
           <div className="g-layer">
             {mine?.alive && !hud?.ended && <LowHp store={hpS} maxHp={mine.maxHp} />}
+            {stale && hud && !hud.ended && <LagMeters s={lagS} />}
             <div className="g-feed" aria-live="polite">
               {feed.map((k) => (
                 <div key={k.id} className={`g-feed-row ${k.mine ? 'is-me' : ''}`}>

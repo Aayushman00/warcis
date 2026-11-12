@@ -42,9 +42,14 @@ export type GShot = { id: number; owner: string; team: Team; x: number; y: numbe
 export type GBarrier = { id: number; owner: string; team: Team; x: number; y: number; w: number; h: number; hp: number; maxHp: number; expiresAt: number }
 /** King of the Hill: the live zone. owner = the one team standing on it; contested = both are. */
 export type GHill = { x: number; y: number; r: number; owner: Team | null; contested: boolean; movesAt: number; everyMs: number }
+/** STALE: Spike adds lag to the enemy team, Sync zeroes your own. Ready once server time reaches readyAt. */
+export type GPickup = { id: number; kind: 'SPIKE' | 'SYNC'; x: number; y: number; readyAt: number }
 export type Snapshot = {
   t: 'state'
   hill?: GHill | null // KOTH only
+  lag?: Record<Team, number> // STALE: ms each team's view of the enemy should run behind (0 elsewhere)
+  behind?: Record<Team, number> // STALE: ms it actually runs behind now; < lag = stalled, > lag = catching up
+  pickups?: GPickup[] // STALE only
   now: number
   elapsed: number
   matchMs: number // regulation; level scores there start sudden death
@@ -76,6 +81,14 @@ export type GMap = {
 
 const INTERP_MS = 100 // ~3 snapshots at 30 Hz
 const TAU = Math.PI * 2
+export const LAG_MAX_MS = 1200 // mirrors sim.LAG_MAX_MS (damage cap), display only
+export const LAG_CEIL_MS = 2000 // mirrors sim.LAG_CEIL_MS (Spike ceiling), display only
+const PICKUP_RESPAWN_MS = { SPIKE: 25_000, SYNC: 12_000 } // mirrors sim.PICKUP_RESPAWN_MS, display only
+const STALE_EPS = 40 // ms: behind within a tick of lag reads as steady, so the look does not flicker
+
+/** STALE: my view of the enemy is frozen (behind < lag), replaying fast (behind > lag) or steady (null). */
+export const staleState = (lag: number, behind: number) => (lag - behind > STALE_EPS ? 'stall' : behind - lag > STALE_EPS ? 'catch' : null)
+type Look = { ghost: number; state: ReturnType<typeof staleState> }
 
 /* ─────────────── interpolation ─────────────── */
 
@@ -140,6 +153,7 @@ export class Renderer {
   private tracers: Tracer[] = []
   private map: GMap
   private me: string
+  private calm = matchMedia('(prefers-reduced-motion: reduce)') // live: STALE effects drop to a static tint
   myAim: number | null = null
   mePos: { x: number; y: number } | null = null // set each frame by the Predictor
   cooldowns: Record<string, number> = {} // class id -> Q cooldown ms, from the server's hello catalog
@@ -229,6 +243,10 @@ export class Renderer {
     }
     if (this.mePos && pos.has(this.me)) pos.set(this.me, { ...this.mePos }) // me: predicted now, not interpolated 100 ms ago
     const mine = B.players.find((p) => p.id === this.me)
+    // STALE: enemies fade the further behind my team's view runs, and show whether that view is frozen or catching up
+    const lag = mine ? (B.lag?.[mine.team] ?? 0) : 0
+    const behind = mine ? (B.behind?.[mine.team] ?? 0) : 0
+    const look: Look | null = lag || behind ? { ghost: 1 - 0.45 * Math.min(1, behind / LAG_CEIL_MS), state: staleState(lag, behind) } : null
 
     this.drawBases(ctx, B, t, mine)
     if (B.hill) this.drawHill(ctx, B.hill, t)
@@ -236,6 +254,7 @@ export class Renderer {
       if (f.state === 'AT_BASE') this.drawStandingFlag(ctx, f.x, f.y, f.team, t)
       else if (f.state === 'DROPPED') this.drawDropped(ctx, f, t)
     }
+    for (const q of B.pickups ?? []) this.drawPickup(ctx, q, t)
 
     for (const b of B.barriers) this.drawBarrier(ctx, b, t)
 
@@ -247,7 +266,20 @@ export class Renderer {
       const q = prevShots.get(s.id)
       if (!q) continue // appears next frame, from its real position
       const len = Math.hypot(s.x - q.x, s.y - q.y) || 1
-      this.drawShot(ctx, q.x + (s.x - q.x) * k, q.y + (s.y - q.y) * k, (s.x - q.x) / len, (s.y - q.y) / len, s.w, s.team)
+      const [x, y] = [q.x + (s.x - q.x) * k, q.y + (s.y - q.y) * k]
+      const stale = look && mine && s.team !== mine.team
+      if (stale) ctx.globalAlpha = look.ghost
+      this.drawShot(ctx, x, y, (s.x - q.x) / len, (s.y - q.y) / len, s.w, s.team)
+      if (stale && look.state === 'stall' && !this.calm.matches) {
+        // colour fringe: the head splits into a cyan and a team-light ghost either side
+        const j = 2 + Math.sin(t / 45)
+        ctx.globalAlpha = 0.6 * look.ghost
+        ctx.fillStyle = color.neon
+        ctx.fillRect(x - j - 2, y - 2, 4, 4)
+        ctx.fillStyle = TC[s.team].light
+        ctx.fillRect(x + j - 2, y - 2, 4, 4)
+      }
+      ctx.globalAlpha = 1
     }
     if (mine) {
       const rects = B.barriers.filter((b) => b.team !== mine.team && b.hp > 0).map((b): [number, number, number, number] => [b.x, b.y, b.w, b.h])
@@ -279,7 +311,7 @@ export class Renderer {
 
     // Players; me last so I'm always on top.
     const order = B.players.filter((p) => p.alive && pos.has(p.id)).sort((a, b) => Number(a.id === this.me) - Number(b.id === this.me))
-    for (const p of order) this.drawPlayer(ctx, p, pos.get(p.id)!, t, B)
+    for (const p of order) this.drawPlayer(ctx, p, pos.get(p.id)!, t, B, mine && p.team !== mine.team ? look : null)
     if (mine?.alive && mine.carryingFlag) this.drawHomeArrow(ctx, pos.get(mine.id)!, mine.team, t)
 
     this.drawEffects(ctx, t)
@@ -358,6 +390,100 @@ export class Renderer {
     ctx.arc(h.x, h.y, h.r - 7, -TAU / 4, -TAU / 4 + TAU * Math.max(0, Math.min(1, (h.movesAt - t) / h.everyMs)))
     ctx.stroke()
     ctx.globalAlpha = 1
+  }
+
+  /** STALE pickup: amber diamond with a spike line (Spike) or green disc with a cycle arrow (Sync). While it respawns
+   *  it is dimmed with a ring running down to readyAt. */
+  private drawPickup(ctx: CanvasRenderingContext2D, q: GPickup, t: number) {
+    const spike = q.kind === 'SPIKE'
+    const c = spike ? color.signal : color.hpHigh
+    const left = q.readyAt - t
+    ctx.save()
+    ctx.translate(q.x, q.y)
+    if (left <= 0) bloom(ctx, c, 0, 0, 26 + (this.calm.matches ? 0 : 3 * Math.sin(t / 260)))
+    ctx.globalAlpha = left <= 0 ? 1 : 0.35
+    ctx.fillStyle = alpha(color.void, 0.85)
+    ctx.strokeStyle = c
+    ctx.lineWidth = 2
+    ctx.lineCap = ctx.lineJoin = 'round'
+    const line = (pts: number[][]) => pts.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)))
+    ctx.beginPath()
+    if (spike) line([[0, -15], [15, 0], [0, 15], [-15, 0], [0, -15]])
+    else ctx.arc(0, 0, 13, 0, TAU)
+    ctx.fill()
+    ctx.stroke()
+    ctx.beginPath()
+    if (spike) {
+      line([[-8, 3], [-4, 3], [-1, -6], [2, 6], [4, 3], [8, 3]])
+      ctx.stroke()
+    } else {
+      const a = Math.PI * 1.35 // open ring with an arrowhead at its end: "reset"
+      const [rx, ry, tx, ty] = [Math.cos(a), Math.sin(a), -Math.sin(a), Math.cos(a)]
+      ctx.arc(0, 0, 6, -0.4, a)
+      ctx.stroke()
+      ctx.fillStyle = c
+      ctx.beginPath()
+      ctx.moveTo(6 * rx + 3 * tx, 6 * ry + 3 * ty)
+      ctx.lineTo(9 * rx - 2 * tx, 9 * ry - 2 * ty)
+      ctx.lineTo(3 * rx - 2 * tx, 3 * ry - 2 * ty)
+      ctx.fill()
+    }
+    if (left > 0) {
+      ctx.globalAlpha = 0.9
+      ctx.lineWidth = 2.5
+      ctx.beginPath()
+      ctx.arc(0, 0, 21, -Math.PI / 2, -Math.PI / 2 + Math.min(1, left / PICKUP_RESPAWN_MS[q.kind]) * TAU)
+      ctx.stroke()
+    }
+    ctx.restore()
+  }
+
+  /** STALE enemy look. Stall: a jittering cyan / team colour fringe and scrolling scanlines (frozen picture).
+   *  Catch-up: short streaks trailing the motion (fast replay). Reduced motion: one static tint for both. */
+  private drawStale(ctx: CanvasRenderingContext2D, x: number, y: number, vx: number, vy: number, team: Team, state: 'stall' | 'catch', t: number, dim: number) {
+    const R = this.map.playerR + 2
+    ctx.save()
+    if (this.calm.matches) {
+      ctx.globalAlpha = dim * 0.22
+      ctx.fillStyle = color.neon
+      ctx.beginPath()
+      ctx.arc(x, y, R, 0, TAU)
+      ctx.fill()
+    } else if (state === 'stall') {
+      const j = 2 + 1.2 * Math.sin(t / 45)
+      ctx.lineWidth = 2
+      ctx.globalAlpha = dim * 0.7
+      for (const [dx, c] of [[-j, color.neon], [j, TC[team].light]] as const) {
+        ctx.strokeStyle = c
+        ctx.beginPath()
+        ctx.arc(x + dx, y, R, 0, TAU)
+        ctx.stroke()
+      }
+      ctx.beginPath()
+      ctx.arc(x, y, R, 0, TAU)
+      ctx.clip()
+      ctx.globalAlpha = dim * 0.4
+      ctx.fillStyle = color.void
+      for (let sy = y - R + ((t / 40) % 4); sy < y + R; sy += 4) ctx.fillRect(x - R, sy, 2 * R, 1.5)
+    } else {
+      const v = Math.hypot(vx, vy)
+      if (v > 0.3) {
+        const [ux, uy] = [vx / v, vy / v]
+        ctx.strokeStyle = TC[team].light
+        ctx.lineWidth = 2
+        ctx.lineCap = 'round'
+        for (const o of [-0.55, 0, 0.55]) {
+          const sx = x - ux * R - uy * o * R
+          const sy = y - uy * R + ux * o * R
+          ctx.globalAlpha = dim * (0.6 - Math.abs(o) * 0.4)
+          ctx.beginPath()
+          ctx.moveTo(sx, sy)
+          ctx.lineTo(sx - ux * 18, sy - uy * 18)
+          ctx.stroke()
+        }
+      }
+    }
+    ctx.restore()
   }
 
   private drawBases(ctx: CanvasRenderingContext2D, s: Snapshot, t: number, mine?: GPlayer) {
@@ -483,7 +609,7 @@ export class Renderer {
     ctx.globalAlpha = 1
   }
 
-  private drawPlayer(ctx: CanvasRenderingContext2D, p: GPlayer, at: { x: number; y: number }, t: number, s: Snapshot) {
+  private drawPlayer(ctx: CanvasRenderingContext2D, p: GPlayer, at: { x: number; y: number }, t: number, s: Snapshot, look: Look | null) {
     const R = this.map.playerR
     const { x, y } = at
     const c = TC[p.team]
@@ -500,7 +626,7 @@ export class Renderer {
     a.lastY = y
     const facing = isMe && this.myAim !== null && t - a.shotAt > 350 ? this.myAim : a.facing
     // An invisible ally (or me) is a faint shimmer; enemies that are invisible are never drawn at all.
-    const dim = (p.connected ? 1 : 0.4) * (p.invisible ? 0.3 + 0.08 * Math.sin(t / 130) : 1)
+    const dim = (p.connected ? 1 : 0.4) * (p.invisible ? 0.3 + 0.08 * Math.sin(t / 130) : 1) * (look?.ghost ?? 1)
     ctx.globalAlpha = dim
 
     // ground shadow
@@ -571,6 +697,7 @@ export class Renderer {
       ctx.globalAlpha = dim
     }
     ctx.restore()
+    if (look?.state) this.drawStale(ctx, x, y, vx, vy, p.team, look.state, t, dim)
 
     if (carried) {
       this.drawPole(ctx, x - 7, y - R - 6, 0.7)
