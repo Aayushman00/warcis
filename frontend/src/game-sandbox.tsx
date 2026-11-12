@@ -59,7 +59,7 @@ function createSim(onState: (s: Snapshot) => void) {
     const weapon = i ? pick(WEAPON_IDS) : myWeapon
     const sp = spawnAt(team, i)
     return {
-      id, name: names[i], team, class: cls, weapon, maxHp: CLASS[cls].hp, x: sp.x, y: sp.y, hidden: false, invisible: false, dashing: false, abilityReadyAt: 0, hp: CLASS[cls].hp,
+      id, name: names[i], team, class: cls, weapon, maxHp: CLASS[cls].hp, x: sp.x, y: sp.y, hidden: false, invisible: false, dashing: false, abilityReadyAt: 0, emote: null, hp: CLASS[cls].hp,
       alive: true, respawnAt: null, carryingFlag: false, connected: true, bot: i > 0, killedBy: null, captures: 0, kills: 0, deaths: 0, rating: 0,
       vx: 0, vy: 0, nextFire: 0, invisUntil: 0, dashUntil: 0, held: {},
     }

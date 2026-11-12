@@ -294,6 +294,8 @@ async def play(ws: WebSocket, match_id: str, token: str = "", bot: int = 0):
                 x, y = msg.get("x"), msg.get("y")
                 if isinstance(x, (int, float)) and isinstance(y, (int, float)) and math.isfinite(x) and math.isfinite(y):
                     g.ability(me.id, x, y, now_ms())
+            elif msg.get("t") == "emote":
+                g.emote(me.id, msg.get("id"), now_ms())
             elif msg.get("t") == "ping" and isinstance(msg.get("c"), (int, float)):
                 await _send(ws, _json({"t": "pong", "c": msg["c"]}))  # client measures round-trip time
     except (WebSocketDisconnect, ValueError, RuntimeError):

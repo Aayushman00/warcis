@@ -30,6 +30,7 @@ SHOT_R = 4
 RESPAWN_MS = 3000
 REGEN_DELAY_MS, REGEN_PER_S = 5000, 15  # HP climbs once this long passes without taking damage
 FLAG_RETURN_MS = 10_000
+EMOTE_COUNT, EMOTE_MS, EMOTE_COOLDOWN_MS = 8, 2500, 1500  # emote ids 0..7 (glyphs live in the client); bubble length; per-player spam gap
 TOUCH = PLAYER_R + 12  # player-to-flag pickup distance
 BASE_R = 60
 MODES = ("CTF", "TDM", "KOTH")
@@ -116,6 +117,9 @@ class Player:
     dash_until: int | None = None
     dash_dx: float = 0.0
     dash_dy: float = 0.0
+    emote: int | None = None  # index into the client's emote set; shown above the player until emote_until
+    emote_until: int = 0
+    emote_ready_at: int = 0
 
     @property
     def max_hp(self) -> int:
@@ -294,6 +298,12 @@ class Game:
         dx, dy = k["right"] - k["left"], k["down"] - k["up"]
         n = math.hypot(dx, dy)
         return (dx / n, dy / n) if n else (0.0, 0.0)
+
+    def emote(self, pid: str, eid: object, now: int) -> None:
+        """Show emote `eid` over a living player for EMOTE_MS. Bad ids and spam are dropped silently."""
+        p = self.players.get(pid)
+        if p and p.alive and not self.ended and type(eid) is int and 0 <= eid < EMOTE_COUNT and now >= p.emote_ready_at:
+            p.emote, p.emote_until, p.emote_ready_at = eid, now + EMOTE_MS, now + EMOTE_COOLDOWN_MS
 
     def fire(self, pid: str, ax: float, ay: float, now: int) -> None:
         """Client sends only where it aims; origin, cooldown, weapon and direction are server-side."""
@@ -710,6 +720,7 @@ class Game:
                 "invisible": inv and not hidden,
                 "dashing": not hidden and p.dash_until is not None and now < p.dash_until,
                 "abilityReadyAt": p.ability_ready_at if friendly else None,
+                "emote": p.emote if not hidden and p.alive and now < p.emote_until else None,  # a cloaked enemy never leaks via emotes
                 "hp": p.hp,
                 "alive": p.alive,
                 "respawnAt": p.respawn_at,
@@ -826,6 +837,24 @@ if __name__ == "__main__":  # self-check: python -m app.sim
     assert r0.x == x0 and not g.shots and r0.ability_ready_at == 0, "acted during the intro"
     run(g, INTRO_MS - 1, INTRO_MS + 500)
     assert r0.x > x0, "frozen after the intro"
+
+    # Emotes: shown 2.5 s, 1.5 s cooldown, bad ids dropped, hidden from enemies while cloaked, gone on death.
+    g = new(1, red=[lo("ASSASSIN", "ASSAULT_RIFLE")])
+    g.intro_ms = 0
+    r0 = g.players["r0"]
+    for bad in (-1, 8, True, 1.5, "1", None):
+        g.emote("r0", bad, 1000)
+    assert g.snapshot(1000)["players"][0]["emote"] is None, "bad emote id accepted"
+    g.emote("r0", 3, 1000)
+    g.emote("r0", 5, 1500)  # inside the cooldown: ignored
+    row = lambda t, vt=None: next(p for p in g.snapshot(t, viewer_team=vt)["players"] if p["id"] == "r0")  # noqa: E731
+    assert row(1500)["emote"] == 3 and row(1000 + EMOTE_MS)["emote"] is None, "emote lifetime"
+    g.emote("r0", 5, 1000 + EMOTE_COOLDOWN_MS)
+    assert row(2600)["emote"] == 5, "emote after cooldown"
+    r0.invisible_until = 10_000
+    assert row(2600, 1)["emote"] is None and row(2600, 0)["emote"] == 5, "cloaked emote leaked to the enemy"
+    g._damage(r0, 2700, "b0", r0.hp)
+    assert row(2800, 0)["emote"] is None, "dead player still emoting"
 
     # Same rules for 1v1 / 2v2 / 4v4: everyone spawns alive at their class's full HP.
     for n in (1, 2, 4):

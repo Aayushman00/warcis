@@ -1,4 +1,5 @@
-import { useRef, type PointerEvent, type RefObject } from 'react'
+import { useRef, useState, type PointerEvent, type RefObject } from 'react'
+import { EMOTES } from './render'
 
 /* Touch input for phones in landscape: a floating move stick on the left, a floating aim-and-fire stick on
    the right (drag out to shoot) and a skill button. Pure view: Game wires the callbacks to the same intents
@@ -8,6 +9,7 @@ export interface TouchApi {
   move(x: number, y: number): void // unit-circle vector, (0,0) = released
   aim(x: number, y: number): void
   skill(): void
+  emote(id: number): void
 }
 
 const R = 50 // knob travel in px
@@ -65,6 +67,7 @@ function Stick({ side, label, onChange }: { side: 'l' | 'r'; label: string; onCh
 }
 
 export function TouchControls({ api, skillRef, skillName }: { api: RefObject<TouchApi | null>; skillRef: RefObject<HTMLButtonElement | null>; skillName: string }) {
+  const [open, setOpen] = useState(false)
   return (
     <div className="g-touch">
       <Stick side="l" label="Move" onChange={(x, y) => api.current?.move(x, y)} />
@@ -72,6 +75,18 @@ export function TouchControls({ api, skillRef, skillName }: { api: RefObject<Tou
       <button ref={skillRef} className="g-skill" onPointerDown={(e) => (e.preventDefault(), api.current?.skill())} aria-label={`Use skill: ${skillName}`}>
         <span>{skillName.toLowerCase()}</span>
       </button>
+      <button className="g-emote-btn" onPointerDown={(e) => (e.preventDefault(), setOpen((o) => !o))} aria-label="Emotes" aria-expanded={open}>
+        🙂
+      </button>
+      {open && (
+        <div className="g-emote-row" role="menu">
+          {EMOTES.map((g, i) => (
+            <button key={i} role="menuitem" onPointerDown={(e) => (e.preventDefault(), api.current?.emote(i), setOpen(false))}>
+              {g}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

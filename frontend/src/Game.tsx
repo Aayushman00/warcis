@@ -551,6 +551,7 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
         return
       }
       if (down && e.code === 'KeyQ' && !e.repeat) return cast()
+      if (down && !e.repeat && /^Digit[1-8]$/.test(e.code)) return send({ t: 'emote', id: +e.code.slice(5) - 1 })
       if (e.code === 'Space' && !done) {
         // Hold Space = hold LMB, at the cursor: a trackpad cannot click-and-hold while it steers the pointer.
         e.preventDefault()
@@ -622,6 +623,9 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
           cursor = p
           aimAt(p)
         }
+      },
+      emote(id) {
+        send({ t: 'emote', id })
       },
       skill() {
         unlockAudio()

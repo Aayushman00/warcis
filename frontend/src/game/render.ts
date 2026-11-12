@@ -8,6 +8,9 @@ import { spawnTracers, stepTracer, type ShotSpec, type Tracer } from './predict'
 import { alpha, color, font, team as TC, type Team } from './tokens'
 
 export type { Team }
+/** Emote glyphs; the index is what the wire carries (the server accepts 0..EMOTES.length-1). */
+export const EMOTES = ['👍', '😂', '😡', '❓', '🔥', '💀', '👋', 'GG'] as const
+
 export type GPlayer = {
   id: string
   name: string
@@ -23,6 +26,7 @@ export type GPlayer = {
   abilityReadyAt: number | null // mine and my allies' only
   hp: number
   alive: boolean
+  emote: number | null // index into EMOTES while the server says it is showing
   respawnAt: number | null
   carryingFlag: boolean
   connected: boolean
@@ -122,7 +126,7 @@ export class Timeline {
 type Particle = { x: number; y: number; vx: number; vy: number; born: number; life: number; color: string; size: number }
 type Floater = { x: number; y: number; born: number; text: string; color: string }
 type Ring = { x: number; y: number; born: number; life: number; color: string; r0: number; r1: number }
-type Anim = { facing: number; walk: number; shotAt: number; hitAt: number; lastX: number; lastY: number; diedAt: number; deathX: number; deathY: number }
+type Anim = { facing: number; walk: number; shotAt: number; hitAt: number; lastX: number; lastY: number; diedAt: number; deathX: number; deathY: number; emote: number | null; emoteAt: number }
 
 const MAX_PARTICLES = 240
 
@@ -153,7 +157,7 @@ export class Renderer {
 
   private a(id: string, x: number, y: number): Anim {
     let a = this.anim.get(id)
-    if (!a) this.anim.set(id, (a = { facing: 0, walk: 0, shotAt: -1e9, hitAt: -1e9, lastX: x, lastY: y, diedAt: -1e9, deathX: x, deathY: y }))
+    if (!a) this.anim.set(id, (a = { facing: 0, walk: 0, shotAt: -1e9, hitAt: -1e9, lastX: x, lastY: y, diedAt: -1e9, deathX: x, deathY: y, emote: null, emoteAt: -1e9 }))
     return a
   }
 
@@ -624,6 +628,38 @@ export class Renderer {
     }
     this.drawName(ctx, p, x, y + R + 10, isMe)
     ctx.globalAlpha = 1
+    this.drawEmote(ctx, p, a, x, top - (isMe ? 22 : 14), t)
+  }
+
+  /** Speech bubble over the player; pops in over 120 ms. Drawn at full alpha so a cloaked ally's emote still reads. */
+  private drawEmote(ctx: CanvasRenderingContext2D, p: GPlayer, a: Anim, x: number, y: number, t: number) {
+    if (p.emote === null || !p.alive) return void (a.emote = null)
+    if (a.emote !== p.emote) (a.emote = p.emote), (a.emoteAt = t)
+    const glyph = EMOTES[p.emote]
+    if (!glyph) return
+    const k = Math.min(1, (t - a.emoteAt) / 120)
+    const pop = 0.6 + 0.4 * k * (2 - k) // ease-out
+    ctx.save()
+    ctx.translate(x, y - 14)
+    ctx.scale(pop, pop)
+    ctx.globalAlpha = k
+    ctx.font = `${glyph.length > 1 ? '700 14px ' + font.display : '20px ' + font.text}`
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    const w = Math.max(30, ctx.measureText(glyph).width + 14)
+    ctx.fillStyle = alpha('#0B0E14', 0.82)
+    ctx.strokeStyle = TC[p.team].base
+    ctx.lineWidth = 1.5
+    ctx.beginPath()
+    ctx.roundRect(-w / 2, -15, w, 30, 10)
+    ctx.moveTo(-5, 15) // little tail pointing at the player
+    ctx.lineTo(0, 21)
+    ctx.lineTo(5, 15)
+    ctx.fill()
+    ctx.stroke()
+    ctx.fillStyle = '#FFFFFF'
+    ctx.fillText(glyph, 0, 1)
+    ctx.restore()
   }
 
   /** Name in a dark pill below the sprite, ellipsized to a max width, with a team shape marker (circle = BLUE, diamond = RED). */
