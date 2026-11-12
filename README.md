@@ -163,11 +163,28 @@ cd services/matchmaking-service && python -m app.services.stats     # → stats 
   of career wins, losses, matches and win rate.
 - **Team Deathmatch** (queue mode `tdm`, its own queue): same arena and classes, flags out of play. Every enemy kill
   scores 1; first to 40 wins, or the higher score at 5:00. Level at 5:00 is sudden death: the next kill wins. Still
-  level at 6:00 it is a draw. The party leader picks CTF, TDM or KOTH in the hub before queueing.
+  level at 6:00 it is a draw. The party leader picks CTF, TDM, KOTH or STALE in the hub before queueing.
 - **King of the Hill** (queue mode `koth`, its own queue): flags out of play. One zone is live and swaps between the
   pockets above and below the centre block every 30 s. A team standing on it alone scores 1 per second; first to 100
   wins, or the higher score at 5:00. Level at 5:00 is sudden death: the next point wins. Still level at 6:00, kills
   decide, else it is a draw.
+
+- **Stale View** (queue mode `stale`, its own queue): scored like TDM (first to 40 kills, same 5:00 / 6:00 rules), flags
+  out of play. Each team sees the enemy *late*: enemy positions and enemy shots are shown as they were `lag` ms ago
+  (your own team is always live). Damage taken raises your team's lag, it drains over time, and the team behind on
+  score drains faster. Four pickups: **Spike** (top and bottom lanes) adds lag to the enemy team, **Sync** (left and
+  right of centre) zeroes yours. The snapshot carries `lag`, `behind` and `pickups`.
+
+  | Tunable (`sim.py`) | Value | Meaning |
+  |---|---|---|
+  | `LAG_PER_HP_MS` | 20 | lag per HP of damage, divided by the team size |
+  | `LAG_HIT_MAX_MS` | 600 | most lag one hit adds |
+  | `LAG_MAX_MS` / `LAG_CEIL_MS` | 1200 / 2000 | cap from damage / hard cap with Spikes |
+  | `LAG_DRAIN_MS_PER_S` | 300 | drain per second (`TRAIL_DRAIN_MULT` 1.5x for the trailing team) |
+  | `SPIKE_MS` | 1000 | lag a Spike adds to the enemy |
+  | `PICKUP_RESPAWN_MS` | Spike 25 s, Sync 12 s | pickup respawn |
+
+  Bots-only soak (`python scripts/bot_ai.py`): lag mean 242 ms, p90 722 ms, at zero 37% (4v4); 214 / 873 / 65% (1v1).
 
 ### Match lobby, classes and weapons
 

@@ -6,6 +6,7 @@
     python scripts/ctf_e2e.py 4     # 4v4  (eight solos, fill on)   default: all three
     python scripts/ctf_e2e.py recovery   # restart game-service mid-match (needs docker compose)
     CTF_CRASH=1 python scripts/ctf_e2e.py recovery   # same, but SIGKILL instead of a clean stop
+    python scripts/ctf_e2e.py stale-bots  # STALE 4v4 with the demo bots (docker compose --profile demo up -d bots)
     python scripts/ctf_e2e.py bots       # 1 human + 7 bots (docker compose --profile demo up -d bots)
     python scripts/ctf_e2e.py abilities  # classes: invisibility privacy, barrier, dash, over real sockets
     python scripts/ctf_e2e.py tdm        # Team Deathmatch 1v1: separate queue, no flags, kills score
@@ -707,6 +708,53 @@ def run_stale() -> None:
     print("STALE E2E PASSED")
 
 
+def run_stale_bots(max_s: float = 420) -> None:
+    """One passive human in a STALE 4v4 with the 7 demo bots: the match runs to its end with sane lag and pickups."""
+    human = Client().register(f"ctfh{uuid.uuid4().hex[:5]}", "password123")
+    human.call("POST", "/matchmaking/queue", {"mode": "stale", "fill": True})
+    for _ in range(90):
+        try:
+            human.call("POST", "/users/me/heartbeat")
+            s = human.status()
+        except ApiFail:
+            time.sleep(1)
+            continue
+        if s["state"] == "found" and len(s["match"]["ready"]) >= 7:
+            break
+        time.sleep(1)
+    else:
+        raise AssertionError("no STALE 4v4 with the bots formed (are the bots running and idle?)")
+    mid = s["match"]["match_id"]
+    human.call("PUT", f"/matchmaking/matches/{mid}/loadout", {"class": "GUARDIAN", "weapon": "SHOTGUN"})
+    human.call("POST", f"/matchmaking/matches/{mid}/ready")
+
+    async def watch():
+        peak, taken, ready = 0, set(), {}
+        t0 = time.time()
+        while time.time() - t0 < max_s:
+            try:
+                async with websockets.connect(f"{WS}/{mid}?token={human.token}") as ws:
+                    assert json.loads(await ws.recv())["t"] == "hello"
+                    async for raw in ws:
+                        st = json.loads(raw)
+                        peak = max(peak, *st["lag"].values())
+                        for k in st["pickups"]:
+                            if k["readyAt"] > ready.setdefault(k["id"], k["readyAt"]):
+                                taken.add(k["id"])  # readyAt moved forward: someone touched it
+                                ready[k["id"]] = k["readyAt"]
+                        if st["state"] == "ENDED":
+                            return peak, taken
+            except (OSError, websockets.ConnectionClosed, websockets.InvalidHandshake):
+                await asyncio.sleep(1)
+        raise AssertionError(f"STALE bots match did not finish in {max_s}s")
+
+    peak, taken = asyncio.run(watch())
+    assert 0 < peak <= 2000 and taken, (peak, taken)
+    print(f"  peak lag {peak} ms, pickups taken: {sorted(taken)}")
+    human.call("POST", f"/matchmaking/matches/{mid}/leave")
+    print("STALE BOTS E2E PASSED")
+
+
 def run_koth() -> None:
     """1v1 KOTH: own queue, no flags, a hill in the snapshot, standing on it alone scores a point a second."""
     mid, red, blue = form_match(1, mode="koth")
@@ -746,4 +794,4 @@ def run(n: int) -> None:
 
 if __name__ == "__main__":
     for arg in sys.argv[1:] or ["1", "2", "4"]:
-        {"recovery": run_recovery, "bots": run_bots, "abilities": run_abilities, "tdm": run_tdm, "koth": run_koth, "stale": run_stale}.get(arg, lambda: run(int(arg)))()
+        {"recovery": run_recovery, "bots": run_bots, "abilities": run_abilities, "tdm": run_tdm, "koth": run_koth, "stale": run_stale, "stale-bots": run_stale_bots}.get(arg, lambda: run(int(arg)))()

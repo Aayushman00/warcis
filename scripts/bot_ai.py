@@ -143,6 +143,12 @@ class Brain:
         elif s.get("mode") in ("TDM", "STALE"):  # no flags: hunt the nearest enemy we can see, else roam midfield
             near = min(visible, key=lambda e: math.dist(pos, (e["x"], e["y"])), default=None)
             goal = (near["x"], near["y"]) if near else self._patrol(team, None, now)
+            if s["mode"] == "STALE" and not any(math.dist(pos, (e["x"], e["y"])) <= FIRE_RANGE.get(me.get("weapon"), SIGHT) for e in visible):
+                lag = (s.get("lag") or {}).get(team, 0)  # keep fights first; otherwise grab a ready Spike, or a Sync when badly behind
+                ready = [k for k in s.get("pickups", []) if s["now"] >= k["readyAt"] and (k["kind"] == "SPIKE" or lag >= 500) and math.dist(pos, (k["x"], k["y"])) <= 300]
+                if ready:
+                    k = min(ready, key=lambda k: math.dist(pos, (k["x"], k["y"])))
+                    goal = (k["x"], k["y"])
         elif own["state"] == "CARRIED":
             goal = (own["x"], own["y"])  # 1/2: stop the carrier
         elif own["state"] == "DROPPED":
@@ -267,11 +273,14 @@ if __name__ == "__main__":  # self-check against the real map/rules: python scri
         pick = lambda i: combos[(i * 4 + seed) % len(combos)]  # noqa: E731
         g = Game([[{"id": f"r{i}", **pick(i)} for i in range(n)], [{"id": f"b{i}", **pick(i + n)} for i in range(n)]], 0, mode)
         brains = {pid: Brain(pid, MAP, random.Random(rng.random()), CATALOG) for pid in g.players}
-        seen = {"fire": 0, "deaths": 0, "stolen": 0, "q": {c: 0 for c in CLASS}}
+        seen = {"fire": 0, "deaths": 0, "stolen": 0, "q": {c: 0 for c in CLASS}, "lag": [], "picked": 0}
         t = 0
         while t < max_s * 1000 and not g.ended:
             t += 33
+            before = [q.ready_at for q in g.pickups]
             g.step(t)
+            seen["lag"] += g.lag_ms  # both teams, every tick
+            seen["picked"] += sum(q.ready_at != b for q, b in zip(g.pickups, before))
             if t % 99 == 0:
                 full = g.snapshot(t)
                 dead = {p["id"] for p in full["players"] if not p["alive"]}
@@ -308,4 +317,11 @@ if __name__ == "__main__":  # self-check against the real map/rules: python scri
     g, t, seen = play(4, seed=7, mode="KOTH")
     assert g.ended and sum(g.scores) > 0 and seen["stolen"] == 0, (g.scores, seen)
     print(f"4v4 KOTH bots: {g.scores} after {t / 1000:.0f}s game time ({g.decided_by}), {seen['deaths']} deaths")
+    for n in (4, 1):
+        g, t, seen = play(n, seed=7 if n == 4 else 1, mode="STALE")
+        assert g.ended and seen["deaths"] > 0 and seen["stolen"] == 0, (g.scores, seen)
+        assert seen["picked"] > 0, f"{n}v{n} STALE: no pickup was ever collected"
+        lag = sorted(seen["lag"])
+        print(f"{n}v{n} STALE bots: {g.scores} after {t / 1000:.0f}s, {seen['picked']} pickups, lag mean {sum(lag) / len(lag):.0f} ms, "
+              f"p90 {lag[len(lag) * 9 // 10]} ms, at-zero {sum(x == 0 for x in lag) / len(lag):.0%}")
     print("bot_ai ok")
