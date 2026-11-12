@@ -785,6 +785,10 @@ class Game:
             }
 
         stale = self.mode == "STALE"
+
+        def lagged(s: Shot) -> int:  # ms an enemy shot is behind this viewer's clock; 0 = live
+            return now - self.view_t[viewer_team] if stale and viewer_team is not None and s.team != viewer_team and not self.ended else 0
+
         live = now - self.started >= self.intro_ms and not self.ended
         return {
             "t": "state",
@@ -819,7 +823,11 @@ class Game:
                 }
                 for f in self.flags
             ],
-            "shots": [{"id": s.id, "owner": s.owner, "team": TEAMS[s.team], "x": r(s.x), "y": r(s.y), "w": s.weapon} for s in self.shots],
+            "shots": [
+                {"id": s.id, "owner": s.owner, "team": TEAMS[s.team], "x": r(s.x - s.vx * lagged(s) / 1000), "y": r(s.y - s.vy * lagged(s) / 1000), "w": s.weapon}
+                for s in self.shots
+                if not lagged(s) or s.born <= self.view_t[viewer_team]
+            ],
             "barriers": [
                 {"id": b.id, "owner": b.owner, "team": TEAMS[b.team], "x": r(b.x), "y": r(b.y), "w": b.w, "h": b.h,
                  "hp": b.hp, "maxHp": BARRIER_HP, "expiresAt": b.expires_at}
@@ -1646,6 +1654,36 @@ if __name__ == "__main__":  # self-check: python -m app.sim
     g, r0 = stale()
     t = pin(g, 0, 100, 1, 2000)
     assert blue_x(g, t) is not None
+
+    # Stale shots: an enemy shot appears once the view clock reaches its birth, at its position then; own/unfiltered are live.
+    def sid(g, t, v):
+        return {s["id"]: s for s in g.snapshot(t, viewer_team=v)["shots"]}
+
+    g, r0 = stale()
+    g.set_keys("r0", {})
+    t = pin(g, 0, 2000, 1, 500)
+    g.fire("r0", 900, r0.y, t)
+    s = g.shots[0]
+    t = pin(g, t, 2200, 1, 500)
+    assert s.id not in sid(g, t, 1) and s.id in sid(g, t, 0) and s.id in sid(g, t, None), "shot visible before the view reaches it"
+    t = pin(g, t, 2600, 1, 500)
+    assert g.view_t[1] >= s.born and s in g.shots
+    got = sid(g, t, 1)[s.id]
+    assert abs(got["x"] - (s.x - s.vx * (t - g.view_t[1]) / 1000)) <= 0.1 and abs(got["y"] - (s.y - s.vy * (t - g.view_t[1]) / 1000)) <= 0.1 and got["x"] < s.x - 20
+    assert sid(g, t, 0)[s.id]["x"] == round(s.x, 1) and sid(g, t, None)[s.id]["x"] == round(s.x, 1), "own/unfiltered shots must be live"
+    g.over, g.ended_at = True, t
+    assert sid(g, t, 1)[s.id]["x"] == round(s.x, 1), "match end reveals the live shot"
+
+    g, r0 = stale()
+    g.set_keys("r0", {})
+    t = pin(g, 0, 2000, 1, 500)
+    put(g.players["b0"], r0.x + 60, r0.y)
+    g.fire("r0", 900, r0.y, t)
+    ids = {s.id for s in g.shots}
+    for t in range(t + 33, 2700, 33):
+        pin(g, t - 33, t, 1, 500)
+        assert not ids & set(sid(g, t, 1)), "shot that hit before becoming visible appeared"
+    assert not g.shots and g.players["b0"].hp < 140
 
     # CTF ignores lag entirely.
     g = new(1)
