@@ -698,6 +698,8 @@ class Game:
                 for b in self.barriers
             ],
             "barrierSeq": self._barrier_id,
+            "lagMs": list(self.lag_ms),
+            "pickups": [{"id": k.id, "readyAt": k.ready_at} for k in self.pickups],
         }
 
     @classmethod
@@ -732,6 +734,11 @@ class Game:
         rw = cp.get("roundWinner")
         g.round_winner = TEAMS.index(rw) if rw else None
         g.capturer = cp.get("capturer")
+        g.lag_ms = list(cp.get("lagMs", [0, 0]))
+        g.view_t = [now - g.lag_ms[t] for t in (0, 1)]  # history refills from live; the view neither stalls nor rewinds
+        ready = {d["id"]: d["readyAt"] for d in cp.get("pickups", [])}  # unknown ids are ignored
+        for k in g.pickups:
+            k.ready_at = ready.get(k.id, 0)
         g.sudden_death, g.progress = cp.get("suddenDeath", False), list(cp.get("progress", g.progress))
         if cp.get("status") == "ENDED":
             g.over, g.ended_at = True, now
@@ -1872,4 +1879,24 @@ if __name__ == "__main__":  # self-check: python -m app.sim
     put(g.players["b0"], *PICKUPS[0][1:])
     g.step(33)
     assert g.lag_ms == [0, 0]
+
+    import json
+    g = new(1, mode="STALE")  # checkpoint keeps lag and used pickups; view clock and history are rebuilt
+    g.step(33)
+    g.lag_ms = [400, 250]
+    pk(g, "SPIKE").ready_at, pk(g, "SYNC", 1).ready_at = 9000, 7000
+    cp = g.checkpoint(100)
+    assert cp["lagMs"] == [400, 250] and {"id": 1, "readyAt": 9000} in cp["pickups"]
+    assert json.loads(json.dumps(cp)) == cp
+    h = Game.restore(cp, 100)
+    assert h.lag_ms == [400, 250] and [p.ready_at for p in h.pickups] == [p.ready_at for p in g.pickups] and h.checkpoint(100) == cp
+    assert h.view_t == [100 - 400, 100 - 250] and not h.hist
+    for vt in (0, 1):
+        for q in h.snapshot(100, viewer_team=vt)["players"]:  # empty history: enemies show live, no raise
+            assert (q["x"], q["y"]) == (h.players[q["id"]].x, h.players[q["id"]].y)
+    old = {k: v for k, v in g.checkpoint(100).items() if k not in ("lagMs", "pickups")}
+    h = Game.restore(old, 100)
+    assert h.lag_ms == [0, 0] and all(p.ready_at == 0 for p in h.pickups)
+    cp["pickups"].append({"id": 99, "readyAt": 5})
+    assert Game.restore(cp, 100).checkpoint(100)["pickups"] == g.checkpoint(100)["pickups"]
     print("sim ok")
