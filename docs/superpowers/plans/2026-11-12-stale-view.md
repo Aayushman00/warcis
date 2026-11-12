@@ -21,8 +21,8 @@
 - **Spike** (pickup): enemy team `lag_ms += SPIKE_MS`, allowed past `LAG_MAX_MS` up to `LAG_CEIL_MS`. Through the view clock this is a freeze of their view; a second Spike extends it, bounded by the ceiling. No separate freeze state.
 - **Sync** (pickup): picker's team `lag_ms = 0`; `view_t` snaps to `now` (resync).
 - Pickups: 2 Spike (contested, centre top/bottom) + 2 Sync (one per half), touch radius `TOUCH`, respawn per kind, inactive during intro and after the match ends.
-- Both teams' `lag` and `behind` (`now - view_t`) go to both teams. Client shows a stall while `behind < lag`, catch-up while `behind > lag`.
-- Accepted live leaks: enemy barriers, emotes (drawn on the ghost, only their timing is live), killfeed. Revisit after playtest.
+- Both teams' `lag` and `behind` (`now - view_t`) go to both teams. Client shows a stall while `behind < lag`, catch-up while `behind > 0` and `behind >= lag` (`behind` never exceeds `lag`).
+- Accepted live leaks: enemy barriers, emotes (drawn on the ghost, only their timing is live), killfeed, the `dashing` flag timing, teammates' bullets ending at the live enemy, pickup `readyAt` jumping when an enemy touches it, shot-id gaps (a modded client can see them). Revisit after playtest.
 
 ## Tunables (top of `sim.py`)
 
@@ -65,7 +65,7 @@ Target band for playtest: mean 250–500, p90 800–1100, at-zero 20–60% at ev
 - History lookup older than history (match start, after `restore`): clamp to oldest entry, or live position if history is empty. Never raise.
 - Respawned enemy: hidden until history has them alive; never a ghost at the death spot.
 - Cloak that just ended: history `None` keeps the hiding spot hidden.
-- Enemy shot not yet visible (`born > view_t`) is not in the snapshot at all, not even its id.
+- Enemy shot not yet visible (`born > view_t`) is not in the snapshot at all, not even its id. Spent shots (hit or expired) are kept for `HIST_MS` (not checkpointed) and shown while `born <= view_t < died_at`, so fire never goes dark when lag exceeds a weapon's TTL.
 - `viewer_team=None`: live rows and live shots.
 - Both teams touch pickups on the same tick; Spike past the ceiling clamps to `LAG_CEIL_MS`.
 - Pickups never trigger during intro or after `ended`.
@@ -137,7 +137,7 @@ Target band for playtest: mean 250–500, p90 800–1100, at-zero 20–60% at ev
 **Interfaces:**
 - Consumes: Task 2. No new keys; the `shots` list is filtered per viewer.
 
-- [ ] **Step 1: Failing tests.** STALE, BLUE lag 500 reached (view clock caught up), `r0` fires at t: BLUE snapshot at t+200 has no row with that shot id; at t+600 it has the shot at `born_x + vx * 0.1` (within 0.1 px). Own shots and `viewer_team=None` are live. A shot that hit a BLUE player before becoming visible never appears. CTF shots unchanged.
+- [ ] **Step 1: Failing tests.** STALE, BLUE lag 500 reached (view clock caught up), `r0` fires at t: BLUE snapshot at t+200 has no row with that shot id; at t+600 it has the shot at `born_x + vx * 0.1` (within 0.1 px). Own shots and `viewer_team=None` are live. A shot that hit a BLUE player before becoming visible still appears once the view passes `born`, travels, and vanishes once the view passes its end, never beyond its end point. BLUE lag 700 vs a RED shotgun: BLUE sees the pellets. CTF shots unchanged.
 - [ ] **Step 2: Run** → FAIL.
 - [ ] **Step 3: Implement.** For `mode == "STALE"`, `viewer_team is not None`, `s.team != viewer_team`: skip if `s.born > view_t[viewer]`, else send `x - vx * (now - view_t) / 1000` (same for `y`).
 - [ ] **Step 4: Run** → PASS.

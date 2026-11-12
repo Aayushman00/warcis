@@ -284,7 +284,8 @@ export class Renderer {
     }
     if (mine) {
       const rects = B.barriers.filter((b) => b.team !== mine.team && b.hp > 0).map((b): [number, number, number, number] => [b.x, b.y, b.w, b.h])
-      const foes = B.players.filter((p) => p.alive && p.team !== mine.team && pos.has(p.id)).map((p) => ({ ...pos.get(p.id)!, r: this.map.playerR }))
+      const stale = (B.behind?.[mine.team] ?? 0) > 0 // STALE: enemies are ghosts of the past, so my tracers must not stop on them
+      const foes = stale ? [] : B.players.filter((p) => p.alive && p.team !== mine.team && pos.has(p.id)).map((p) => ({ ...pos.get(p.id)!, r: this.map.playerR }))
       this.tracers = this.tracers.filter((s) => {
         const live = stepTracer(s, t, this.map, rects, foes)
         const v = Math.hypot(s.vx, s.vy)

@@ -3,6 +3,10 @@ server stays authoritative and the rules are testable. Self-check: python -m app
 
 Team 0 = RED (left), team 1 = BLUE (right).
 
+STALE: TDM scoring, but each team sees the enemy through a lagging view clock (hits and Spikes add lag, Sync clears it):
+snapshot() sends a viewer's enemy rows and shots as they were at its view time, plus lag/behind/pickups keys. Spent shots
+are kept for HIST_MS so a lagged view still sees them land; neither history nor spent shots are checkpointed.
+
 TDM: every enemy kill scores 1 and the flags are out of play. First to KILLS_TO_WIN, or the higher score at MATCH_MS,
 wins. Level at MATCH_MS: sudden death, the next kill wins (same switch as CTF below). Still level at HARD_STOP_MS: a draw.
 
@@ -21,7 +25,7 @@ ones in warcis_common.loadout; every balance number lives in the tables below.
 
 import math
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 TEAMS = ("RED", "BLUE")
 W, H = 1200, 700
@@ -36,7 +40,7 @@ TOUCH = PLAYER_R + 12  # player-to-flag pickup distance
 BASE_R = 60
 MODES = ("CTF", "TDM", "KOTH", "STALE")
 ROUNDS_TO_WIN = 3  # CTF captures
-KILLS_TO_WIN = 40  # TDM kills
+KILLS_TO_WIN = 40  # TDM / STALE kills
 HILL_TO_WIN = 100  # KOTH seconds of uncontested hold
 TARGET = {"CTF": ROUNDS_TO_WIN, "TDM": KILLS_TO_WIN, "STALE": KILLS_TO_WIN, "KOTH": HILL_TO_WIN}
 HILL_R = 70
@@ -289,6 +293,7 @@ class Game:
         self.view_t = [now, now]  # STALE: per viewing team, the time it currently sees; never moves backwards
         self.pickups = [Pickup(i + 1, k, x, y) for i, (k, x, y) in enumerate(PICKUPS)]
         self.hist: deque[tuple[int, dict[str, tuple[float, float] | None]]] = deque()
+        self.spent: deque[tuple[int, Shot]] = deque()  # STALE: (died_at, shot parked at its end point), so a lagged view still sees it land
         self.decided_by: str | None = None  # ROUNDS | SCORE | SUDDEN_DEATH | OBJECTIVE | KILLS | DRAW
 
     def _spawn(self, p: Player, slot: int | None = None) -> None:
@@ -332,16 +337,14 @@ class Game:
             self.hist.popleft()
 
     def _seen(self, viewer: int, p: Player) -> tuple[float, float] | None:
-        """Where `viewer` sees enemy `p`: newest entry at or before its view clock (oldest if none, live if no history).
-        None = not visible then (dead or cloaked), so the caller sends no coordinates."""
+        """Where `viewer` sees enemy `p`: newest entry at or before its view clock (live if no history at all).
+        None = not visible then (dead, cloaked, or the view clock predates all history), so the caller sends no coordinates."""
         if not self.hist:
             return p.x, p.y
-        snap = self.hist[0][1]
         for t, s in reversed(self.hist):
             if t <= self.view_t[viewer]:
-                snap = s
-                break
-        return snap.get(p.id, (p.x, p.y))
+                return s.get(p.id, (p.x, p.y))
+        return None  # the view clock is older than all history (after a restore): hide rather than leak live
 
     # ─────────────── intents from clients ───────────────
 
@@ -538,9 +541,15 @@ class Game:
                     target.hp -= s.damage
                 elif isinstance(target, Player):
                     self._damage(target, now, s.owner, s.damage)
+                nx, ny = s.x + (nx - s.x) * best[0], s.y + (ny - s.y) * best[0]  # impact point
             elif now - s.born < s.ttl:
                 s.x, s.y = nx, ny
                 live.append(s)
+                continue
+            if self.mode == "STALE":
+                self.spent.append((now, replace(s, x=nx, y=ny)))
+        while self.spent and self.spent[0][0] < now - HIST_MS:
+            self.spent.popleft()
         self.shots = live
         self.barriers = [b for b in self.barriers if b.hp > 0]
 
@@ -783,7 +792,9 @@ class Game:
         they keep their state, can be shot and hold flags, but send no input.
         bots: display-only label; bots play through the same socket protocol as humans.
         viewer_team: whose eyes this is. An invisible enemy is sent without coordinates (and without
-        its ability timer), so the position never reaches that client. None = the unfiltered view."""
+        its ability timer), so the position never reaches that client. None = the unfiltered view.
+        STALE: a viewer's enemy rows and enemy shots are as of its view clock (not live); lag/behind are 0 outside play,
+        and pickups lists the Spike/Sync pads."""
         r = lambda v: round(v, 1)  # noqa: E731
 
         def row(p: Player) -> dict:
@@ -823,8 +834,19 @@ class Game:
 
         stale = self.mode == "STALE"
 
-        def lagged(s: Shot) -> int:  # ms an enemy shot is behind this viewer's clock; 0 = live
-            return now - self.view_t[viewer_team] if stale and viewer_team is not None and s.team != viewer_team and not self.ended else 0
+        stale_view = stale and viewer_team is not None and not self.ended
+
+        def shot_row(s: Shot, ref: int) -> dict:  # ref = the moment s.x, s.y describe; back-projected to the viewer's clock
+            k = (ref - self.view_t[viewer_team]) / 1000 if stale_view and s.team != viewer_team else 0
+            return {"id": s.id, "owner": s.owner, "team": TEAMS[s.team], "x": r(s.x - s.vx * k), "y": r(s.y - s.vy * k), "w": s.weapon}
+
+        def seen_shots() -> list[dict]:
+            if not stale_view:
+                return [shot_row(s, now) for s in self.shots]
+            v = self.view_t[viewer_team]
+            out = [shot_row(s, now) for s in self.shots if s.team == viewer_team or s.born <= v]
+            out += [shot_row(s, t) for t, s in self.spent if s.team != viewer_team and s.born <= v < t]
+            return out
 
         live = now - self.started >= self.intro_ms and not self.ended
         return {
@@ -841,7 +863,7 @@ class Game:
             "decidedBy": self.decided_by,
             "progress": {TEAMS[t]: self.progress[t] for t in (0, 1)},
             "scores": {TEAMS[t]: self.scores[t] for t in (0, 1)},
-            "lag": {TEAMS[t]: self.lag_ms[t] if stale else 0 for t in (0, 1)},
+            "lag": {TEAMS[t]: self.lag_ms[t] if stale and live else 0 for t in (0, 1)},
             "behind": {TEAMS[t]: now - self.view_t[t] if stale and live else 0 for t in (0, 1)},
             "round": self.round,
             "resumesAt": self.resume_at,
@@ -861,11 +883,7 @@ class Game:
                 }
                 for f in self.flags
             ],
-            "shots": [
-                {"id": s.id, "owner": s.owner, "team": TEAMS[s.team], "x": r(s.x - s.vx * lagged(s) / 1000), "y": r(s.y - s.vy * lagged(s) / 1000), "w": s.weapon}
-                for s in self.shots
-                if not lagged(s) or s.born <= self.view_t[viewer_team]
-            ],
+            "shots": seen_shots(),
             "barriers": [
                 {"id": b.id, "owner": b.owner, "team": TEAMS[b.team], "x": r(b.x), "y": r(b.y), "w": b.w, "h": b.h,
                  "hp": b.hp, "maxHp": BARRIER_HP, "expiresAt": b.expires_at}
@@ -1684,14 +1702,26 @@ if __name__ == "__main__":  # self-check: python -m app.sim
     t = pin(g, t, 5100, 1, 1000)
     assert blue_x(g, t) == round(r0.x, 1), "spawn position should show once view catches up"
 
-    # Dead enemy row is live; a huge lag falls back to the oldest entry without error.
+    # Dead enemy row is live (the body shows where it fell, not the stale position); a lag beyond all history hides.
     g, r0 = stale()
-    t = pin(g, 0, 500, 1, 0)
-    r0.alive, r0.respawn_at = False, 9000
-    assert blue_x(g, t) == round(r0.x, 1), "dead row should be live"
+    t = pin(g, 0, 1000, 1, 500)
+    assert blue_x(g, t) != round(r0.x, 1), "stale row should differ from live before death"
+    g._damage(r0, t, "b0", 10**6)
+    row = next(p for p in g.snapshot(t, viewer_team=1)["players"] if p["id"] == "r0")
+    assert not r0.alive and not row["alive"] and row["x"] == round(r0.x, 1), "dead row should be live"
     g, r0 = stale()
     t = pin(g, 0, 100, 1, 2000)
-    assert blue_x(g, t) is not None
+    assert blue_x(g, t) is None, "view older than all history must hide"
+    g, r0 = stale()
+    t = pin(g, 0, 1000, 1, 800)
+    h = Game.restore(g.checkpoint(t), t)
+    h.intro_ms = g.intro_ms
+    h.step(t + 33)
+    assert h.hist and h.snapshot(t + 33, viewer_team=1)["players"][0]["hidden"], "restore must not reveal live positions"
+    for t2 in range(t + 66, t + 1100, 33):
+        h.lag_ms[1] = 800
+        h.step(t2)
+    assert not h.snapshot(t2, viewer_team=1)["players"][0]["hidden"], "visible once history covers the view clock"
 
     # Stale shots: an enemy shot appears once the view clock reaches its birth, at its position then; own/unfiltered are live.
     def sid(g, t, v):
@@ -1712,16 +1742,42 @@ if __name__ == "__main__":  # self-check: python -m app.sim
     g.over, g.ended_at = True, t
     assert sid(g, t, 1)[s.id]["x"] == round(s.x, 1), "match end reveals the live shot"
 
+    # A shot that hit before the view reached it still shows later: it travels, then vanishes at its end, never past it.
     g, r0 = stale()
     g.set_keys("r0", {})
     t = pin(g, 0, 2000, 1, 500)
     put(g.players["b0"], r0.x + 60, r0.y)
     g.fire("r0", 900, r0.y, t)
+    s = g.shots[0]
+    seen, died = [], None
+    for t2 in range(t + 33, 3000, 33):
+        pin(g, t2 - 33, t2, 1, 500)
+        if died is None and s not in g.shots:
+            died = g.spent[-1][0]
+            end = g.spent[-1][1]
+        row = sid(g, t2, 1).get(s.id)
+        if row:
+            seen.append((t2, row))
+            assert row["x"] <= round(end.x, 1) + 0.1 if died else True, "stale shot passed its end point"
+        elif died and g.view_t[1] >= died:
+            break
+    assert died and g.players["b0"].hp < 140 and seen, "shot that hit must still show to the lagged view"
+    assert max(r["x"] for _, r in seen) <= round(end.x, 1) + 0.1 and not sid(g, t2, 1).get(s.id), "stale shot must vanish after view passes its end"
+    assert not any(s.id in sid(g, tt, 1) for tt in (t2 + 33,)), "stays gone"
+    assert "spent" not in g.checkpoint(t2)
+
+    # Short-lived pellets (shotgun TTL < lag) must not go dark.
+    g = new(1, red=[lo("ASSAULTER", "SHOTGUN")], mode="STALE")
+    put(g.players["r0"], 300, 120)
+    t = pin(g, 0, 2000, 1, 700)
+    g.fire("r0", 900, 120, t)
     ids = {s.id for s in g.shots}
-    for t in range(t + 33, 2700, 33):
-        pin(g, t - 33, t, 1, 500)
-        assert not ids & set(sid(g, t, 1)), "shot that hit before becoming visible appeared"
-    assert not g.shots and g.players["b0"].hp < 140
+    assert len(ids) > 1
+    seen = False
+    for t2 in range(t + 33, t + 2000, 33):
+        pin(g, t2 - 33, t2, 1, 700)
+        seen = seen or bool(ids & set(sid(g, t2, 1)))
+    assert seen, "shotgun fire invisible to a 700 ms lagged enemy"
 
     # CTF ignores lag entirely.
     g = new(1)
@@ -1839,9 +1895,9 @@ if __name__ == "__main__":  # self-check: python -m app.sim
     while t < 2000:
         t = run(g, t, t + 100)
         xs[t] = bview(g, t)
-    v = list(xs.values())
+    v = [x for x in xs.values() if x is not None]
     assert all(a <= b for a, b in zip(v, v[1:])), "view rewound"
-    assert len({xs[k] for k in xs if k <= 733}) == 1 and v[-1] > xs[733], "spike freeze"
+    assert all(xs[k] is None for k in xs if k <= 733) and v and v[-1] > v[0], "spike: hidden until the view clock reaches recorded history, then advances"
     g = new(1, mode="STALE")
     put(g.players["b0"], pk(g, "SPIKE").x, pk(g, "SPIKE").y)
     g.lag_ms[0] = 1500

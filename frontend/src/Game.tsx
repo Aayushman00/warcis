@@ -438,7 +438,7 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
       introPlayed = true
       ;([3, 2, 1] as const).forEach((n, i) => later(i * 480, () => (setIntro(n), sfx.countdown(false))))
       later(1440, () => (setIntro('go'), sfx.countdown(true)))
-      later(2540, () => (setIntro(null), setBanner({ id: ++seq, ...(tdm ? { title: 'ELIMINATE THE ENEMY', sub: `First team to ${KILLS_TO_WIN} kills wins` } : koth ? { title: 'HOLD THE HILL', sub: `Stand in the zone alone to score · first to ${HILL_TO_WIN}` } : { title: 'STEAL THE ENEMY FLAG', sub: 'Bring it back to your base' }), team: 'BLUE' })))
+      later(2540, () => (setIntro(null), setBanner({ id: ++seq, ...(tdm ? { title: 'ELIMINATE THE ENEMY', sub: stale ? 'You see enemies late · Sync clears your lag · Spike theirs' : `First team to ${KILLS_TO_WIN} kills wins` } : koth ? { title: 'HOLD THE HILL', sub: `Stand in the zone alone to score · first to ${HILL_TO_WIN}` } : { title: 'STEAL THE ENEMY FLAG', sub: 'Bring it back to your base' }), team: 'BLUE' })))
     }
 
     /** Turn the difference between two authoritative snapshots into feedback, timed to render time. */
