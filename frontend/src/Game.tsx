@@ -254,7 +254,7 @@ function LagMeters({ s }: { s: LagStores }) {
   const behind = useSyncExternalStore(s.behind.sub, s.behind.get) ?? 0
   const foe = useSyncExternalStore(s.foe.sub, s.foe.get) ?? 0
   const state = staleState(lag, behind)
-  const word = state === 'stall' ? 'Frozen' : state === 'catch' ? 'Catching up' : lag || behind ? 'Steady' : 'In sync'
+  const word = state === 'stall' ? 'Frozen' : state === 'catch' ? 'Catching up' : 'Live'
   const pct = (ms: number) => `${Math.min(100, (ms / LAG_CEIL_MS) * 100)}%`
   const meter = (label: string, ms: number, extra?: string) => ({ role: 'meter', 'aria-label': label, 'aria-valuemin': 0, 'aria-valuemax': LAG_CEIL_MS, 'aria-valuenow': ms, 'aria-valuetext': `${ms} ms${extra ? `, ${extra}` : ''}` })
   return (
@@ -954,7 +954,6 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
 
           <div className="g-layer">
             {mine?.alive && !hud?.ended && <LowHp store={hpS} maxHp={mine.maxHp} />}
-            {stale && hud && !hud.ended && <LagMeters s={lagS} />}
             <div className="g-feed" aria-live="polite">
               {feed.map((k) => (
                 <div key={k.id} className={`g-feed-row ${k.mine ? 'is-me' : ''}`}>
@@ -1096,6 +1095,8 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
             {objective.icon}
             {objective.text}
           </div>
+        ) : stale && hud && !hud.ended ? (
+          <LagMeters s={lagS} /> // outside the arena: in a mode about seeing enemies the HUD must not cover play
         ) : touch ? (
           <span />
         ) : (

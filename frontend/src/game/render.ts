@@ -48,7 +48,7 @@ export type Snapshot = {
   t: 'state'
   hill?: GHill | null // KOTH only
   lag?: Record<Team, number> // STALE: ms each team's view of the enemy should run behind (0 elsewhere)
-  behind?: Record<Team, number> // STALE: ms it actually runs behind now; < lag = stalled, > lag = catching up
+  behind?: Record<Team, number> // STALE: ms it actually runs behind now; < lag = stalled, >= lag (and > 0) = catching up
   pickups?: GPickup[] // STALE only
   now: number
   elapsed: number
@@ -84,10 +84,11 @@ const TAU = Math.PI * 2
 export const LAG_MAX_MS = 1200 // mirrors sim.LAG_MAX_MS (damage cap), display only
 export const LAG_CEIL_MS = 2000 // mirrors sim.LAG_CEIL_MS (Spike ceiling), display only
 const PICKUP_RESPAWN_MS = { SPIKE: 25_000, SYNC: 12_000 } // mirrors sim.PICKUP_RESPAWN_MS, display only
-const STALE_EPS = 40 // ms: behind within a tick of lag reads as steady, so the look does not flicker
+const STALL_EPS = 40 // ms: behind trailing lag by about a tick is not a stall yet, so the look does not flicker
 
-/** STALE: my view of the enemy is frozen (behind < lag), replaying fast (behind > lag) or steady (null). */
-export const staleState = (lag: number, behind: number) => (lag - behind > STALE_EPS ? 'stall' : behind - lag > STALE_EPS ? 'catch' : null)
+/** STALE: my view of the enemy is frozen (behind < lag) or replaying fast (behind > 0 and >= lag: any lag above 0 is
+ *  draining, so behind == lag means the view is gaining on live); null = live. */
+export const staleState = (lag: number, behind: number) => (lag - behind > STALL_EPS ? 'stall' : behind > 0 ? 'catch' : null)
 type Look = { ghost: number; state: ReturnType<typeof staleState> }
 
 /* ─────────────── interpolation ─────────────── */

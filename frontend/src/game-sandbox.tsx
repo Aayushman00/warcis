@@ -226,15 +226,16 @@ function createSim(onState: (s: Snapshot) => void) {
 }
 
 /* ponytail: ?mode=stale scripts lag / behind instead of running a view clock (enemies stay live), enough to see every
-   look. Five 2.5 s phases loop: zero, stalled (lag 700, behind rising), catchup (behind > lag), spiked (lag 1700),
-   sync (0). &state=<phase> pins one, replaying its 2.5 s. I am server team RED (my_team 0). */
+   look. Five 2.5 s phases loop: zero, stalled (lag 700, behind rising), catchup (behind == lag, both draining 700 -> 25),
+   spiked (lag 1700), sync (0). &state=<phase> pins one, replaying its 2.5 s. I am server team RED (my_team 0). */
 const PHASES = ['zero', 'stalled', 'catchup', 'spiked', 'sync'] as const
 const PHASE_MS = 2500
 const PICKUP_MS = { SPIKE: 25_000, SYNC: 12_000 }
 const staleView = (el: number) => {
   const ph = PHASES.find((p) => p === q.get('state')) ?? PHASES[Math.floor(el / PHASE_MS) % PHASES.length]
   const u = el % PHASE_MS
-  const [lag, behind] = ph === 'stalled' ? [700, 0.25 * u] : ph === 'catchup' ? [300, 700 - 0.15 * u] : ph === 'spiked' ? [1700, 700 + 0.4 * u] : [0, 0]
+  const drain = Math.round(700 - 0.27 * u)
+  const [lag, behind] = ph === 'stalled' ? [700, 0.25 * u] : ph === 'catchup' ? [drain, drain] : ph === 'spiked' ? [1700, 700 + 0.4 * u] : [0, 0]
   return { lag: { RED: lag, BLUE: 250 }, behind: { RED: Math.round(behind), BLUE: 250 } }
 }
 

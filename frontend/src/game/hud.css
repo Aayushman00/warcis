@@ -176,9 +176,9 @@
 .g-banner-title::after { transform: scaleX(-1); }
 .g-banner-sub { font-size: 14px; font-weight: 500; color: var(--g-ink); text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8); }
 
-/* STALE lag meters, top left of the map: mine prominent, the enemy's small */
-.g-lag { position: absolute; top: var(--g-s3); left: var(--g-s3); display: flex; flex-direction: column; gap: 6px; width: 188px; padding: 8px 10px; background: color-mix(in srgb, var(--g-void) 72%, transparent); border-radius: var(--g-r-chip); box-shadow: inset 0 0 0 1px var(--g-rule); }
-.g-lag-own { --lag: var(--g-signal); display: grid; grid-template-columns: 1fr auto; column-gap: 8px; row-gap: 2px; }
+/* STALE lag meters, in the player bar's middle slot (never over the arena): mine prominent, the enemy's small */
+.g-lag { display: flex; align-items: center; gap: var(--g-s5); animation: g-swap var(--g-t-base) var(--g-t-ease); }
+.g-lag-own { --lag: var(--g-signal); display: grid; grid-template-columns: 1fr auto; column-gap: 8px; row-gap: 2px; width: 196px; }
 .g-lag-own.is-spiked { --lag: var(--g-hpLow); }
 .g-lag-label { font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--g-dim); white-space: nowrap; }
 .g-lag-state { font-size: 12px; font-weight: 700; color: var(--g-ink); white-space: nowrap; }
@@ -190,7 +190,7 @@
 .g-lag-track { position: relative; grid-column: 1 / -1; display: block; height: 6px; overflow: hidden; border-radius: 2px; background: color-mix(in srgb, var(--g-ink) 12%, transparent); box-shadow: inset 0 0 0 1px var(--g-rule); }
 .g-lag-track i { position: absolute; inset: 0 auto 0 0; background: var(--lag, var(--g-dim)); transition: width var(--g-t-fast) linear, background var(--g-t-base); }
 .g-lag-track u { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--g-ink); opacity: 0.5; }
-.g-lag-foe { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 6px; }
+.g-lag-foe { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 6px; width: 150px; opacity: 0.85; }
 .g-lag-foe .g-lag-label { font-size: 10px; }
 .g-lag-foe .g-lag-track { grid-column: auto; height: 3px; }
 .g-lag-foe .g-lag-num { font-size: 13px; }
@@ -441,12 +441,6 @@
   .is-touch .g-ping { top: 7px; left: var(--g-safe-l); right: auto; min-width: 0; padding: 2px 6px; font-size: 12px; text-align: left; }
   .is-touch .g-feed { top: 6px; right: 6px; }
   .is-touch .g-feed-row { padding: 2px 6px; font-size: 11px; }
-  /* top left of the map: clear of the sticks (bottom corners) and the skill / emote buttons (right edge) */
-  .is-touch .g-lag { top: 6px; left: 6px; width: 132px; gap: 3px; padding: 4px 8px; }
-  .is-touch .g-lag-own .g-lag-num { font-size: 18px; }
-  .is-touch .g-lag-label { font-size: 9px; }
-  .is-touch .g-lag-state { font-size: 10px; }
-  .is-touch .g-lag-own .g-lag-track { margin-top: 2px; }
   .is-touch .g-banner { top: 10%; }
   .is-touch .g-banner-title { font-size: 26px; }
   .is-touch .g-banner-title::before, .is-touch .g-banner-title::after { width: 28px; }
@@ -470,6 +464,14 @@
   .is-touch .g-hp-num { min-width: 26px; font-size: 19px; }
   .is-touch .g-objective { position: fixed; top: calc(var(--g-top-h) + 6px); left: 0; right: 0; width: max-content; max-width: 56vw; margin-inline: auto; padding: 2px 10px; font-size: 11px; white-space: normal; text-align: center; background: color-mix(in srgb, var(--g-void) 70%, transparent); border-radius: 999px; }
   .is-touch .g-objective svg { width: 12px; height: 12px; flex: none; }
+  /* STALE meters: one slim line in the same band as the objective line, clear of the sticks and side buttons */
+  .is-touch .g-lag { position: fixed; top: calc(var(--g-top-h) + 6px); left: 0; right: 0; width: max-content; max-width: 70vw; margin-inline: auto; gap: 10px; padding: 2px 10px; background: color-mix(in srgb, var(--g-void) 70%, transparent); border-radius: 999px; }
+  .is-touch .g-lag-own, .is-touch .g-lag-foe { display: flex; align-items: center; gap: 5px; width: auto; }
+  .is-touch .g-lag-own .g-lag-track, .is-touch .g-lag-foe .g-lag-track { width: 44px; height: 4px; margin: 0; }
+  .is-touch .g-lag-label { font-size: 9px; }
+  .is-touch .g-lag-state { font-size: 10px; }
+  .is-touch .g-lag-own .g-lag-num { font-size: 15px; }
+  .is-touch .g-lag-foe .g-lag-num { font-size: 12px; }
   .is-touch .g-right { position: fixed; top: 3px; right: var(--g-safe-r); gap: 6px; pointer-events: auto; }
   .is-touch .g-icon-btn { width: 32px; height: 32px; background: color-mix(in srgb, var(--g-deck) 80%, transparent); }
   .is-touch .g-icon-btn svg { width: 17px; height: 17px; }
@@ -508,7 +510,7 @@
 /* phone in portrait: the map letterboxes by width, so buttons drop below the score plate */
 @media (orientation: portrait) and (max-width: 560px) {
   .is-touch .g-right { top: calc(var(--g-top-h) + 6px); }
-  .is-touch .g-objective { top: calc(var(--g-top-h) + 50px); max-width: 90vw; }
+  .is-touch .g-objective, .is-touch .g-lag { top: calc(var(--g-top-h) + 50px); max-width: 90vw; }
   .is-touch .g-skill { bottom: 190px; }
 }
 
