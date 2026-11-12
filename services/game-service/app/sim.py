@@ -33,11 +33,11 @@ FLAG_RETURN_MS = 10_000
 EMOTE_COUNT, EMOTE_MS, EMOTE_COOLDOWN_MS = 8, 2500, 1500  # emote ids 0..7 (glyphs live in the client); bubble length; per-player spam gap
 TOUCH = PLAYER_R + 12  # player-to-flag pickup distance
 BASE_R = 60
-MODES = ("CTF", "TDM", "KOTH")
+MODES = ("CTF", "TDM", "KOTH", "STALE")
 ROUNDS_TO_WIN = 3  # CTF captures
 KILLS_TO_WIN = 40  # TDM kills
 HILL_TO_WIN = 100  # KOTH seconds of uncontested hold
-TARGET = {"CTF": ROUNDS_TO_WIN, "TDM": KILLS_TO_WIN, "KOTH": HILL_TO_WIN}
+TARGET = {"CTF": ROUNDS_TO_WIN, "TDM": KILLS_TO_WIN, "STALE": KILLS_TO_WIN, "KOTH": HILL_TO_WIN}
 HILL_R = 70
 HILL_MS = 30_000  # the live hill moves this often
 MATCH_MS = 300_000  # regulation; level scores here start sudden death
@@ -228,10 +228,14 @@ def _loadout_of(d: dict) -> tuple[str, str]:
 
 
 class Game:
+    @property
+    def kills_mode(self) -> bool:
+        return self.mode in ("TDM", "STALE")
+
     def __init__(self, teams: list[list[dict]], now: int, mode: str = "CTF"):
         """teams: [[{id, name, class?, weapon?}, ...] RED, [...] BLUE], from the match document.
         A missing class/weapon (a match created before loadouts existed) means the default;
-        an unknown one is corruption and raises ValueError. mode: CTF | TDM | KOTH."""
+        an unknown one is corruption and raises ValueError. mode: CTF | TDM | KOTH | STALE."""
         if mode not in MODES:
             raise ValueError(f"unknown mode {mode}")
         self.mode = mode
@@ -489,7 +493,7 @@ class Game:
         killer = self.players.get(by) if by else None
         if killer and killer.team != p.team:
             killer.kills += 1
-            if self.mode == "TDM" and not self.ended:
+            if self.kills_mode and not self.ended:
                 self.scores[killer.team] += 1
                 if self.sudden_death:
                     self._finish(now, killer.team, "SUDDEN_DEATH")
@@ -805,10 +809,10 @@ if __name__ == "__main__":  # self-check: python -m app.sim
         for x, y in SPAWNS[t]:
             assert not _hits_wall(x, y, PLAYER_R), "spawn inside wall"
 
-    def new(n=1, red=None, blue=None):
+    def new(n=1, red=None, blue=None, mode="CTF"):
         def roster(prefix, lo):
             return [{"id": f"{prefix}{i}", **(lo[i] if lo and i < len(lo) else {})} for i in range(n)]
-        g = Game([roster("r", red), roster("b", blue)], 0)
+        g = Game([roster("r", red), roster("b", blue)], 0, mode)
         g.intro_ms = 0
         return g
 
@@ -1441,6 +1445,12 @@ if __name__ == "__main__":  # self-check: python -m app.sim
     g.step(MATCH_MS)
     h = Game.restore(g.checkpoint(MATCH_MS), MATCH_MS)
     assert h.ended and h.winner == 0
+
+    # STALE: scored like TDM, no flags, no hill.
+    g = new(mode="STALE")
+    g._damage(g.players["b0"], 20, "r0", g.players["b0"].hp)
+    s = g.snapshot(0)
+    assert g.scores == [1, 0] and s["flags"] == [] and s["target"] == KILLS_TO_WIN and s["hill"] is None
 
     # TDM: an enemy kill scores; flags are out of play; first to KILLS_TO_WIN wins.
     def tdm():
