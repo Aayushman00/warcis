@@ -47,6 +47,9 @@ INTRO_MS = 3000  # 3-2-1-GO on the clients: nobody moves or fires until it is ov
 INTERMISSION_MS = 4000  # frozen pause after a non-final capture, then the arena resets
 LAG_MAX_MS = 1200  # STALE: ordinary cap on how far behind a team's view of the enemy runs
 LAG_CEIL_MS = 2000  # STALE: hard ceiling, pickups included
+SPIKE_MS = 1000  # STALE: a Spike adds this to the enemy team's lag (may pass LAG_MAX_MS, never LAG_CEIL_MS)
+PICKUP_RESPAWN_MS = {"SPIKE": 25_000, "SYNC": 12_000}
+PICKUPS = (("SPIKE", 600, 110), ("SPIKE", 600, 590), ("SYNC", 340, 350), ("SYNC", 860, 350))  # id = index + 1; Task 6 restores by id
 HIST_MS = LAG_CEIL_MS + 200  # STALE: how much position history is kept
 LAG_PER_HP_MS = 20  # STALE: lag added per HP of damage, split across the damaged team's players
 LAG_HIT_MAX_MS = 600  # STALE: most lag a single hit can add
@@ -235,6 +238,15 @@ def _loadout_of(d: dict) -> tuple[str, str]:
     return cls, weapon
 
 
+@dataclass
+class Pickup:
+    id: int
+    kind: str  # SPIKE | SYNC
+    x: float
+    y: float
+    ready_at: int = 0
+
+
 class Game:
     @property
     def kills_mode(self) -> bool:
@@ -275,6 +287,7 @@ class Game:
         self.progress = [0, 0]  # per team, this round: furthest carry of the enemy flag toward home, in % (1 = picked up)
         self.lag_ms = [0, 0]  # STALE: per viewing team, how far behind (ms) it should see the enemy
         self.view_t = [now, now]  # STALE: per viewing team, the time it currently sees; never moves backwards
+        self.pickups = [Pickup(i + 1, k, x, y) for i, (k, x, y) in enumerate(PICKUPS)]
         self.hist: deque[tuple[int, dict[str, tuple[float, float] | None]]] = deque()
         self.decided_by: str | None = None  # ROUNDS | SCORE | SUDDEN_DEATH | OBJECTIVE | KILLS | DRAW
 
@@ -292,6 +305,22 @@ class Game:
     @staticmethod
     def invisible(p: Player, now: int) -> bool:
         return p.invisible_until is not None and now < p.invisible_until
+
+    def _pickups(self, now: int) -> None:
+        """A living player within TOUCH of a ready pickup takes it (first in player order wins a tie).
+        Sync clears the taker's team lag and snaps its view to now; Spike lags the enemy team."""
+        for q in self.pickups:
+            if now < q.ready_at:
+                continue
+            for p in self.players.values():
+                if p.alive and math.hypot(p.x - q.x, p.y - q.y) <= TOUCH:
+                    if q.kind == "SYNC":
+                        self.lag_ms[p.team] = 0
+                        self.view_t[p.team] = now
+                    else:
+                        self.lag_ms[1 - p.team] = min(LAG_CEIL_MS, self.lag_ms[1 - p.team] + SPIKE_MS)
+                    q.ready_at = now + PICKUP_RESPAWN_MS[q.kind]
+                    break
 
     def _clock(self, now: int) -> None:
         for t in (0, 1):
@@ -453,6 +482,7 @@ class Game:
             for t in (0, 1):  # whole ms drained since t0: integer, tick-size independent
                 rate = int(LAG_DRAIN_MS_PER_S * TRAIL_DRAIN_MULT) if self.scores[t] < self.scores[1 - t] else LAG_DRAIN_MS_PER_S
                 self.lag_ms[t] = max(0, self.lag_ms[t] - (now * rate // 1000 - t0 * rate // 1000))
+            self._pickups(now)
             self._clock(now)
             self._record(now)
 
@@ -811,6 +841,7 @@ class Game:
             "roundWinner": TEAMS[self.round_winner] if self.round_winner is not None else None,
             "capturer": self.capturer,
             "players": [row(p) for p in self.players.values()],
+            "pickups": [{"id": q.id, "kind": q.kind, "x": q.x, "y": q.y, "readyAt": q.ready_at} for q in self.pickups] if stale else [],
             "hill": self._hill_row(now) if self.mode == "KOTH" else None,
             "flags": [] if self.mode != "CTF" else [
                 {
@@ -1765,4 +1796,80 @@ if __name__ == "__main__":  # self-check: python -m app.sim
     run(g, 1000, 1100)
     g._finish(1100, 0, "SCORE")
     assert g.snapshot(1100)["behind"] == {"RED": 0, "BLUE": 0}
+    # Spike / Sync pickups: STALE only; Sync zeroes the picker's lag and snaps its view, Spike lags the enemy.
+    def pk(g, kind, i=0):
+        return [q for q in g.pickups if q.kind == kind][i]
+
+    def bview(g, t):
+        return next(p for p in g.snapshot(t, viewer_team=0)["players"] if p["id"] == "b0")["x"]
+
+    for x, y in [(x, y) for _, x, y in PICKUPS]:
+        assert not _hits_wall(x, y, TOUCH), "pickup inside a wall"
+    g = new(1, mode="STALE")
+    q = pk(g, "SYNC")
+    put(g.players["b0"], q.x, q.y)
+    g.lag_ms[1] = 900
+    g.step(33)
+    assert g.lag_ms[1] == 0 and g.view_t[1] == 33 and q.ready_at == 33 + PICKUP_RESPAWN_MS["SYNC"]
+    g.lag_ms[1] = 900
+    run(g, 33, q.ready_at - 1)
+    assert q.ready_at == 33 + PICKUP_RESPAWN_MS["SYNC"], "re-triggered before respawn"
+    g.lag_ms[1] = 900
+    g.step(q.ready_at)
+    assert g.lag_ms[1] == 0 and q.ready_at == 2 * PICKUP_RESPAWN_MS["SYNC"] + 33, "ready pickup should re-trigger"
+    s = g.snapshot(q.ready_at)
+    assert {p["kind"] for p in s["pickups"]} == {"SPIKE", "SYNC"} and set(s["pickups"][0]) == {"id", "kind", "x", "y", "readyAt"}
+    assert new(1).snapshot(0)["pickups"] == []
+
+    g = new(1, mode="STALE")  # Spike: RED's view of a moving BLUE freezes ~SPIKE_MS/1.3, then advances, never rewinds
+    q = pk(g, "SPIKE")
+    put(g.players["b0"], q.x, q.y)
+    g.set_keys("b0", {"right": True})
+    g.step(33)
+    assert g.lag_ms == [SPIKE_MS, 0] and q.ready_at == 33 + PICKUP_RESPAWN_MS["SPIKE"]
+    xs = {}
+    t = 33
+    while t < 2000:
+        t = run(g, t, t + 100)
+        xs[t] = bview(g, t)
+    v = list(xs.values())
+    assert all(a <= b for a, b in zip(v, v[1:])), "view rewound"
+    assert len({xs[k] for k in xs if k <= 733}) == 1 and v[-1] > xs[733], "spike freeze"
+    g = new(1, mode="STALE")
+    put(g.players["b0"], pk(g, "SPIKE").x, pk(g, "SPIKE").y)
+    g.lag_ms[0] = 1500
+    g.step(33)
+    assert g.lag_ms[0] == LAG_CEIL_MS
+    g = new(1, mode="STALE")  # a second Spike extends, bounded by the ceiling
+    for i in (0, 1):
+        put(g.players["b0"], pk(g, "SPIKE", i).x, pk(g, "SPIKE", i).y)
+        g.step(33 * (i + 1))
+    assert SPIKE_MS < g.lag_ms[0] <= LAG_CEIL_MS
+
+    g = new(1, mode="STALE")  # dead players do not collect; both teams on separate pickups in one tick both apply
+    b0 = g.players["b0"]
+    put(b0, pk(g, "SPIKE").x, pk(g, "SPIKE").y)
+    b0.alive, b0.respawn_at = False, 9999
+    g.step(33)
+    assert g.lag_ms == [0, 0] and pk(g, "SPIKE").ready_at == 0
+    b0.alive = True
+    put(b0, pk(g, "SYNC", 1).x, pk(g, "SYNC", 1).y)
+    put(g.players["r0"], pk(g, "SYNC").x, pk(g, "SYNC").y)
+    g.lag_ms = [500, 700]
+    g.step(66)
+    assert g.lag_ms == [0, 0] and pk(g, "SYNC").ready_at and pk(g, "SYNC", 1).ready_at
+    g = new(1, mode="STALE")  # not during the intro or after the match ends
+    g.intro_ms = INTRO_MS
+    put(g.players["b0"], pk(g, "SPIKE").x, pk(g, "SPIKE").y)
+    g.step(1000)
+    assert g.lag_ms == [0, 0] and pk(g, "SPIKE").ready_at == 0
+    g = new(1, mode="STALE")
+    g.over, g.ended_at = True, 0
+    put(g.players["b0"], pk(g, "SPIKE").x, pk(g, "SPIKE").y)
+    g.step(33)
+    assert pk(g, "SPIKE").ready_at == 0
+    g = new(1, mode="TDM")
+    put(g.players["b0"], *PICKUPS[0][1:])
+    g.step(33)
+    assert g.lag_ms == [0, 0]
     print("sim ok")
