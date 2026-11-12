@@ -48,6 +48,10 @@ INTERMISSION_MS = 4000  # frozen pause after a non-final capture, then the arena
 LAG_MAX_MS = 1200  # STALE: ordinary cap on how far behind a team's view of the enemy runs
 LAG_CEIL_MS = 2000  # STALE: hard ceiling, pickups included
 HIST_MS = LAG_CEIL_MS + 200  # STALE: how much position history is kept
+LAG_PER_HP_MS = 20  # STALE: lag added per HP of damage, split across the damaged team's players
+LAG_HIT_MAX_MS = 600  # STALE: most lag a single hit can add
+LAG_DRAIN_MS_PER_S = 300  # STALE: lag lost per second
+TRAIL_DRAIN_MULT = 1.5  # STALE: the team behind on score drains this much faster
 MOVE_STEP = PLAYER_R / 2  # a dash never advances more than this between wall checks
 # Walking keeps its pre-dash behaviour: one wall check per normal tick (220 px/s * 33 ms = 7.3 px), split only on a
 # long tick so it still cannot tunnel. Splitting every tick in two shifted where players stop against walls, and bots
@@ -446,6 +450,9 @@ class Game:
         if self.mode == "KOTH" and not self.ended:
             self._hill(max(0, now - t0), now)
         if self.mode == "STALE":
+            for t in (0, 1):  # whole ms drained since t0: integer, tick-size independent
+                rate = int(LAG_DRAIN_MS_PER_S * TRAIL_DRAIN_MULT) if self.scores[t] < self.scores[1 - t] else LAG_DRAIN_MS_PER_S
+                self.lag_ms[t] = max(0, self.lag_ms[t] - (now * rate // 1000 - t0 * rate // 1000))
             self._clock(now)
             self._record(now)
 
@@ -516,6 +523,10 @@ class Game:
         self._reveal(p)  # any positive damage ends invisibility
         p.hp -= amount
         p.hurt_at = now
+        if self.mode == "STALE":
+            n = sum(q.team == p.team for q in self.players.values())
+            add = min(LAG_HIT_MAX_MS, amount * LAG_PER_HP_MS // n)
+            self.lag_ms[p.team] = max(self.lag_ms[p.team], min(LAG_MAX_MS, self.lag_ms[p.team] + add))  # never lowers a Spike's overshoot
         if p.hp > 0:
             return
         p.hp, p.alive, p.respawn_at, p.killed_by = 0, False, None if self.sudden_death else now + RESPAWN_MS, by
@@ -773,6 +784,8 @@ class Game:
                 "rating": rating(p),
             }
 
+        stale = self.mode == "STALE"
+        live = now - self.started >= self.intro_ms and not self.ended
         return {
             "t": "state",
             "mode": self.mode,
@@ -787,6 +800,8 @@ class Game:
             "decidedBy": self.decided_by,
             "progress": {TEAMS[t]: self.progress[t] for t in (0, 1)},
             "scores": {TEAMS[t]: self.scores[t] for t in (0, 1)},
+            "lag": {TEAMS[t]: self.lag_ms[t] if stale else 0 for t in (0, 1)},
+            "behind": {TEAMS[t]: now - self.view_t[t] if stale and live else 0 for t in (0, 1)},
             "round": self.round,
             "resumesAt": self.resume_at,
             "roundWinner": TEAMS[self.round_winner] if self.round_winner is not None else None,
@@ -1637,4 +1652,79 @@ if __name__ == "__main__":  # self-check: python -m app.sim
     g.set_keys("r0", {"right": True})
     t = pin(g, 0, 2000, 1, 1000)
     assert not g.hist and blue_x(g, t) == round(g.players["r0"].x, 1), "lag must not apply outside STALE"
+
+    # STALE lag: rises with damage dealt to the team, drains over time, never outside STALE.
+    def hit(g, pid, amt):
+        p = g.players[pid]
+        p.hp = 10**6  # survive any number of hits
+        g._damage(p, 0, "r0", amt)
+
+    g = new(1, mode="STALE")
+    hit(g, "b0", 14)
+    assert g.lag_ms == [0, 280], g.lag_ms
+    hit(g, "b0", 70)
+    assert g.lag_ms[1] == 280 + 600, "per-hit cap"
+    for _ in range(20):
+        hit(g, "b0", 70)
+    assert g.lag_ms[1] == LAG_MAX_MS
+    g.lag_ms[1] = 1500  # a Spike put it above the cap; a hit must not lower it
+    hit(g, "b0", 70)
+    assert g.lag_ms[1] == 1500
+    g = new(2, mode="STALE")
+    hit(g, "b1", 14)
+    assert g.lag_ms == [0, 140], g.lag_ms
+    g = new(1)  # CTF damage leaves lag alone
+    hit(g, "b0", 50)
+    assert g.lag_ms == [0, 0]
+
+    g = new(1, mode="STALE")
+    g.lag_ms[1] = 900
+    run(g, 0, 1000)
+    assert g.lag_ms == [0, 600], g.lag_ms
+    g = new(1, mode="STALE")
+    g.lag_ms[1], g.scores = 900, [1, 0]  # blue trails
+    run(g, 0, 1000)
+    assert g.lag_ms[1] == 450, g.lag_ms
+    g = new(1, mode="STALE")
+    g.lag_ms[1] = 100
+    run(g, 0, 3000)
+    assert g.lag_ms == [0, 0]
+    ends = []
+    for dt in (33, 100):
+        g = new(1, mode="STALE")
+        g.lag_ms[1] = 900
+        run(g, 0, 1000, dt)
+        ends.append(g.lag_ms[1])
+    assert ends[0] == ends[1] == 600, ends
+
+    # behind: 1 ms per ms while the view is stalled, then the drain rate while catching up.
+    def behind(g, t):
+        return g.snapshot(t)["behind"]["BLUE"]
+    g = new(1, mode="STALE")
+    t = run(g, 0, 1000)
+    assert behind(g, t) == 0
+    g.lag_ms[1] = 1200
+    t = run(g, t, 1200)
+    assert behind(g, t) == 200, behind(g, t)
+    t = run(g, t, 2000)
+    b0 = behind(g, t)
+    assert b0 == g.snapshot(t)["lag"]["BLUE"] == 900
+    t = run(g, t, 2500)
+    assert b0 - behind(g, t) == 150
+    assert g.snapshot(t)["behind"]["RED"] == 0 and g.snapshot(t)["lag"]["RED"] == 0
+    g = new(1)  # outside STALE both are zero
+    g.step(500)
+    s = g.snapshot(500)
+    assert s["behind"] == {"RED": 0, "BLUE": 0} and s["lag"] == {"RED": 0, "BLUE": 0}
+    g = new(1, mode="STALE")
+    g.intro_ms = INTRO_MS
+    g.lag_ms[1] = 500
+    g.step(1000)
+    assert g.snapshot(1000)["behind"] == {"RED": 0, "BLUE": 0}
+    g = new(1, mode="STALE")
+    run(g, 0, 1000)
+    g.lag_ms[1] = 1200
+    run(g, 1000, 1100)
+    g._finish(1100, 0, "SCORE")
+    assert g.snapshot(1100)["behind"] == {"RED": 0, "BLUE": 0}
     print("sim ok")
