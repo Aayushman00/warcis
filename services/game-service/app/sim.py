@@ -20,6 +20,7 @@ ones in warcis_common.loadout; every balance number lives in the tables below.
 """
 
 import math
+from collections import deque
 from dataclasses import dataclass, field
 
 TEAMS = ("RED", "BLUE")
@@ -44,6 +45,9 @@ MATCH_MS = 300_000  # regulation; level scores here start sudden death
 HARD_STOP_MS = 360_000  # sudden death ends here and the tiebreak decides
 INTRO_MS = 3000  # 3-2-1-GO on the clients: nobody moves or fires until it is over
 INTERMISSION_MS = 4000  # frozen pause after a non-final capture, then the arena resets
+LAG_MAX_MS = 1200  # STALE: ordinary cap on how far behind a team's view of the enemy runs
+LAG_CEIL_MS = 2000  # STALE: hard ceiling, pickups included
+HIST_MS = LAG_CEIL_MS + 200  # STALE: how much position history is kept
 MOVE_STEP = PLAYER_R / 2  # a dash never advances more than this between wall checks
 # Walking keeps its pre-dash behaviour: one wall check per normal tick (220 px/s * 33 ms = 7.3 px), split only on a
 # long tick so it still cannot tunnel. Splitting every tick in two shifted where players stop against walls, and bots
@@ -265,6 +269,9 @@ class Game:
         self.capturer: str | None = None
         self.sudden_death = False  # level at MATCH_MS: no respawns, next capture (TDM: kill) wins
         self.progress = [0, 0]  # per team, this round: furthest carry of the enemy flag toward home, in % (1 = picked up)
+        self.lag_ms = [0, 0]  # STALE: per viewing team, how far behind (ms) it should see the enemy
+        self.view_t = [now, now]  # STALE: per viewing team, the time it currently sees; never moves backwards
+        self.hist: deque[tuple[int, dict[str, tuple[float, float] | None]]] = deque()
         self.decided_by: str | None = None  # ROUNDS | SCORE | SUDDEN_DEATH | OBJECTIVE | KILLS | DRAW
 
     def _spawn(self, p: Player, slot: int | None = None) -> None:
@@ -281,6 +288,27 @@ class Game:
     @staticmethod
     def invisible(p: Player, now: int) -> bool:
         return p.invisible_until is not None and now < p.invisible_until
+
+    def _clock(self, now: int) -> None:
+        for t in (0, 1):
+            self.view_t[t] = max(self.view_t[t], now - self.lag_ms[t])
+
+    def _record(self, now: int) -> None:
+        self.hist.append((now, {p.id: (p.x, p.y) if p.alive and not self.invisible(p, now) else None for p in self.players.values()}))
+        while self.hist[0][0] < now - HIST_MS:
+            self.hist.popleft()
+
+    def _seen(self, viewer: int, p: Player) -> tuple[float, float] | None:
+        """Where `viewer` sees enemy `p`: newest entry at or before its view clock (oldest if none, live if no history).
+        None = not visible then (dead or cloaked), so the caller sends no coordinates."""
+        if not self.hist:
+            return p.x, p.y
+        snap = self.hist[0][1]
+        for t, s in reversed(self.hist):
+            if t <= self.view_t[viewer]:
+                snap = s
+                break
+        return snap.get(p.id, (p.x, p.y))
 
     # ─────────────── intents from clients ───────────────
 
@@ -417,6 +445,9 @@ class Game:
             self._flags(now)
         if self.mode == "KOTH" and not self.ended:
             self._hill(max(0, now - t0), now)
+        if self.mode == "STALE":
+            self._clock(now)
+            self._record(now)
 
     def _advance(self, p: Player, vx: float, vy: float, secs: float, step: float = MOVE_STEP) -> None:
         """Move at velocity (vx, vy) for `secs`, checking walls at least every `step` px so nothing tunnels.
@@ -710,6 +741,10 @@ class Game:
         def row(p: Player) -> dict:
             inv = self.invisible(p, now) and not self.ended
             hidden = inv and viewer_team is not None and p.team != viewer_team
+            seen = (p.x, p.y)
+            if self.mode == "STALE" and not self.ended and viewer_team is not None and p.team != viewer_team and p.alive and not inv:
+                seen = self._seen(viewer_team, p)
+                hidden = seen is None
             friendly = viewer_team is None or p.team == viewer_team
             return {
                 "id": p.id,
@@ -718,8 +753,8 @@ class Game:
                 "class": p.pclass,
                 "weapon": p.weapon,
                 "maxHp": p.max_hp,
-                "x": None if hidden else r(p.x),
-                "y": None if hidden else r(p.y),
+                "x": None if hidden else r(seen[0]),
+                "y": None if hidden else r(seen[1]),
                 "hidden": hidden,
                 "invisible": inv and not hidden,
                 "dashing": not hidden and p.dash_until is not None and now < p.dash_until,
@@ -1527,4 +1562,79 @@ if __name__ == "__main__":  # self-check: python -m app.sim
     g.players["r0"].kills = 1
     g.step(HARD_STOP_MS)
     assert g.ended and g.winner == 0 and g.decided_by == "KILLS"
+
+    # STALE: each team sees the enemy through its own lag; tests pin lag before every step so drain cannot matter.
+    def pin(g, t0, t1, team, L, dt=33):
+        t = t0
+        while t < t1:
+            t = min(t + dt, t1)
+            g.lag_ms[team] = L
+            g.step(t)
+        return t
+
+    def stale(red=None):
+        g = new(1, red=red, mode="STALE")
+        g.set_keys("r0", {"right": True})
+        put(g.players["r0"], 60, 120)  # the open top lane, so the walk is not stopped by a wall
+        return g, g.players["r0"]
+
+    def blue_x(g, t):
+        return g.snapshot(t, viewer_team=1)["players"][0]["x"]
+
+    g, r0 = stale()
+    t = pin(g, 0, 2000, 1, 500)
+    want = [s for tt, s in g.hist if tt <= g.view_t[1]][-1]["r0"][0]
+    row = next(p for p in g.snapshot(t, viewer_team=1)["players"] if p["id"] == "r0")
+    assert row["x"] == round(want, 1) and row["x"] < r0.x - 50 and not row["hidden"], "stale row is not the view-clock entry"
+    for v in (0, None):
+        assert next(p for p in g.snapshot(t, viewer_team=v)["players"] if p["id"] == "r0")["x"] == round(r0.x, 1), "own team/unfiltered must be live"
+    g.over, g.ended_at = True, t
+    assert next(p for p in g.snapshot(t, viewer_team=1)["players"] if p["id"] == "r0")["x"] == round(r0.x, 1), "stale view must end with the match"
+
+    # Stall, not rewind: raising lag freezes the view, then it resumes; it never goes backwards.
+    g, r0 = stale()
+    xs = {}
+    t = pin(g, 0, 2000, 1, 0)
+    xs[t] = blue_x(g, t)
+    while t < 3000:
+        t = pin(g, t, t + 100, 1, 600)
+        xs[t] = blue_x(g, t)
+    assert len({xs[k] for k in xs if 2000 <= k <= 2400}) == 1, "view should freeze while lag grows"
+    assert xs[2700] > xs[2400], "view should resume"
+    v = list(xs.values())
+    assert all(a <= b for a, b in zip(v, v[1:])), "view rewound"
+
+    # Cloaked enemy: no coordinates even through the lag.
+    g, r0 = stale([lo("ASSASSIN")])
+    t = pin(g, 0, 900, 1, 1500)
+    r0.invisible_until = 2000
+    t = pin(g, t, 2500, 1, 1500)
+    row = next(p for p in g.snapshot(t, viewer_team=1)["players"] if p["id"] == "r0")
+    assert row["hidden"] and row["x"] is None and row["y"] is None, "cloak leaked through stale view"
+
+    # Respawn: hidden while the lagged view is of the dead body, shown at the spawn once it catches up.
+    g, r0 = stale()
+    g.set_keys("r0", {})
+    t = pin(g, 0, 1000, 1, 1000)
+    r0.alive, r0.respawn_at = False, 4000
+    t = pin(g, t, 4500, 1, 1000)
+    row = next(p for p in g.snapshot(t, viewer_team=1)["players"] if p["id"] == "r0")
+    assert r0.alive and row["hidden"] and row["x"] is None, "respawned player should not show yet"
+    t = pin(g, t, 5100, 1, 1000)
+    assert blue_x(g, t) == round(r0.x, 1), "spawn position should show once view catches up"
+
+    # Dead enemy row is live; a huge lag falls back to the oldest entry without error.
+    g, r0 = stale()
+    t = pin(g, 0, 500, 1, 0)
+    r0.alive, r0.respawn_at = False, 9000
+    assert blue_x(g, t) == round(r0.x, 1), "dead row should be live"
+    g, r0 = stale()
+    t = pin(g, 0, 100, 1, 2000)
+    assert blue_x(g, t) is not None
+
+    # CTF ignores lag entirely.
+    g = new(1)
+    g.set_keys("r0", {"right": True})
+    t = pin(g, 0, 2000, 1, 1000)
+    assert not g.hist and blue_x(g, t) == round(g.players["r0"].x, 1), "lag must not apply outside STALE"
     print("sim ok")
