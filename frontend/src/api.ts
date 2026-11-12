@@ -148,7 +148,7 @@ export interface TeamDTO {
   parties: { party_id: string; players: string[] }[]
 }
 /** SQUAD: matches made before modes existed; they were all Capture the Flag. */
-export type GameMode = 'CTF' | 'TDM' | 'KOTH' | 'SQUAD'
+export type GameMode = 'CTF' | 'TDM' | 'KOTH' | 'STALE' | 'SQUAD'
 export interface MatchDTO {
   match_id: string
   mode: GameMode

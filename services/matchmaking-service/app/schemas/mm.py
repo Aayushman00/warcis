@@ -5,7 +5,7 @@ from warcis_common import loadout
 
 
 class QueueIn(BaseModel):
-    mode: Literal["ctf", "tdm", "koth"] = "ctf"
+    mode: Literal["ctf", "tdm", "koth", "stale"] = "ctf"
     fill: bool = True  # False: party is queued and matched as-is, never combined with other parties
 
 

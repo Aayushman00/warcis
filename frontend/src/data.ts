@@ -13,14 +13,15 @@ export interface Player {
 
 export const MAX_PARTY = 4
 
-export type Mode = 'ctf' | 'tdm' | 'koth'
+export type Mode = 'ctf' | 'tdm' | 'koth' | 'stale'
 
 export const MODES: { id: Mode; name: string; short: string; blurb: string }[] = [
   { id: 'ctf', name: 'Capture the Flag', short: 'CTF', blurb: 'Steal the enemy flag and carry it home. First to 3 captures.' },
   { id: 'tdm', name: 'Team Deathmatch', short: 'TDM', blurb: 'No flags, just fights. First team to 40 kills.' },
   { id: 'koth', name: 'King of the Hill', short: 'KOTH', blurb: 'Hold the zone alone to score. It moves every 30 s. First to 100.' },
+  { id: 'stale', name: 'Stale View', short: 'STALE', blurb: 'You see enemies as they were moments ago. Getting hurt freezes your view. Grab Sync, Spike theirs.' },
 ]
-/** Display name for a server mode (CTF | TDM | KOTH; SQUAD = matches from before modes, all CTF). */
+/** Display name for a server mode (CTF | TDM | KOTH | STALE; SQUAD = matches from before modes, all CTF). */
 export const modeLabel = (m: string) => (MODES.find((x) => x.id === m.toLowerCase()) ?? MODES[0]).name
 
 export const STATUS_LABEL: Record<Status, string> = {

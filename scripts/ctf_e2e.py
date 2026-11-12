@@ -9,6 +9,7 @@
     python scripts/ctf_e2e.py bots       # 1 human + 7 bots (docker compose --profile demo up -d bots)
     python scripts/ctf_e2e.py abilities  # classes: invisibility privacy, barrier, dash, over real sockets
     python scripts/ctf_e2e.py tdm        # Team Deathmatch 1v1: separate queue, no flags, kills score
+    python scripts/ctf_e2e.py stale      # Stale View 1v1: TDM scoring, lag meters and pickups in the snapshot
     python scripts/ctf_e2e.py koth       # King of the Hill 1v1: holding the hill alone scores
 
 Stack running, bots stopped. Goes through nginx (:8080) -> gateway -> game-service, the
@@ -683,6 +684,29 @@ def run_tdm() -> None:
     print("TDM E2E PASSED")
 
 
+def run_stale() -> None:
+    """1v1 STALE: kills score like TDM, no flags, lag meters at zero and four pickups in the snapshot."""
+    mid, red, blue = form_match(1, mode="stale")
+    print(f"1v1 STALE match {mid[:8]}")
+
+    async def look():
+        seats, pumps = await open_seats(mid, red + blue)
+        R = seats[0]
+        try:
+            await R.until(lambda st: all(p["connected"] for p in st["players"]))
+            st = R.s
+            assert st["mode"] == "STALE" and st["target"] == 40 and st["flags"] == [], st
+            assert st["lag"] == {"RED": 0, "BLUE": 0} and len(st["pickups"]) == 4, st
+        finally:
+            for p in pumps:
+                p.cancel()
+
+    asyncio.run(look())
+    for c in red + blue:
+        c.call("POST", f"/matchmaking/matches/{mid}/leave")
+    print("STALE E2E PASSED")
+
+
 def run_koth() -> None:
     """1v1 KOTH: own queue, no flags, a hill in the snapshot, standing on it alone scores a point a second."""
     mid, red, blue = form_match(1, mode="koth")
@@ -722,4 +746,4 @@ def run(n: int) -> None:
 
 if __name__ == "__main__":
     for arg in sys.argv[1:] or ["1", "2", "4"]:
-        {"recovery": run_recovery, "bots": run_bots, "abilities": run_abilities, "tdm": run_tdm, "koth": run_koth}.get(arg, lambda: run(int(arg)))()
+        {"recovery": run_recovery, "bots": run_bots, "abilities": run_abilities, "tdm": run_tdm, "koth": run_koth, "stale": run_stale}.get(arg, lambda: run(int(arg)))()

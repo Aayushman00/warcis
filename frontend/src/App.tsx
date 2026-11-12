@@ -59,7 +59,7 @@ function Launcher({ me, setMe }: { me: Player; setMe: (p: Player | null) => void
   const [mode, setMode] = useState<Mode>(() => {
     try {
       const m = localStorage.getItem('warcis.mode')
-      return m === 'tdm' || m === 'koth' ? m : 'ctf'
+      return m === 'tdm' || m === 'koth' || m === 'stale' ? m : 'ctf'
     } catch {
       return 'ctf'
     }

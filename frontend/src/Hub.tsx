@@ -397,7 +397,7 @@ function LastMatch({ m, open }: { m?: HistoryItem; open: () => void }) {
         {mine != null && theirs != null && <span className="ml-2 text-ink-100">{mine}–{theirs}</span>}
       </p>
       <p className="mt-1 text-sm text-ink-300">
-        {m.me.kills} kills{m.mode === 'TDM' || m.mode === 'KOTH' ? '' : ` · ${m.me.captures} captures`} · {modeLabel(m.mode)}
+        {m.me.kills} kills{m.mode === 'TDM' || m.mode === 'KOTH' || m.mode === 'STALE' ? '' : ` · ${m.me.captures} captures`} · {modeLabel(m.mode)}
       </p>
     </button>
   )

@@ -367,7 +367,7 @@ async def tick() -> None:
             await queue.update_many({"party_id": {"$in": list(stale)}, "status": "WAITING"}, {"$set": {"status": "INVALIDATED"}})
             waiting = [e for e in waiting if e["party_id"] not in stale]
 
-        for mode in ("CTF", "TDM", "KOTH"):
+        for mode in ("CTF", "TDM", "KOTH", "STALE"):
             pool = [e for e in waiting if e["mode"] == mode]
             for a, b in matchups([e for e in pool if e["fill"]]):
                 await _create_match(mode, a, b)

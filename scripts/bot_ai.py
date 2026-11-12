@@ -140,7 +140,7 @@ class Brain:
 
         if s.get("hill"):  # KOTH: stand on the live hill; shooting on the way is handled below
             goal = (s["hill"]["x"], s["hill"]["y"])
-        elif s.get("mode") == "TDM":  # no flags: hunt the nearest enemy we can see, else roam midfield
+        elif s.get("mode") in ("TDM", "STALE"):  # no flags: hunt the nearest enemy we can see, else roam midfield
             near = min(visible, key=lambda e: math.dist(pos, (e["x"], e["y"])), default=None)
             goal = (near["x"], near["y"]) if near else self._patrol(team, None, now)
         elif own["state"] == "CARRIED":

@@ -315,7 +315,7 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
   const [abilities, setAbilities] = useState<Record<string, string>>({})
   const [fullscreen, setFullscreen] = useState(false)
   const touchApi = useRef<TouchApi | null>(null)
-  const tdm = match.mode === 'TDM'
+  const tdm = match.mode === 'TDM' || match.mode === 'STALE'
   const koth = match.mode === 'KOTH'
   const ctf = !tdm && !koth // includes SQUAD, the pre-modes name
   const modeName = modeLabel(match.mode)
