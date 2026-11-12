@@ -207,6 +207,22 @@ export function Frame({ cut, glow, className = '', children }: { cut: number; gl
   )
 }
 
+export type ToastMsg = { text: string; ok?: boolean }
+
+/** One message at the bottom-left: green for something that worked, red for something that did not. */
+export const Toast = ({ msg, onClose }: { msg: ToastMsg; onClose: () => void }) => (
+  <div
+    role={msg.ok ? 'status' : 'alert'}
+    className={`panel fixed bottom-4 left-4 z-50 flex max-w-[min(24rem,calc(100vw-2rem))] animate-rise items-center gap-3 bg-ink-800 px-4 py-3 text-sm shadow-2xl ${msg.ok ? 'border-online/40' : 'border-foe/40'}`}
+  >
+    {msg.ok ? <Icon name="check" className="size-4 shrink-0 text-online" /> : <span className="size-2 shrink-0 rounded-full bg-foe" />}
+    <span>{msg.text}</span>
+    <button onClick={onClose} aria-label="Dismiss" className="ml-auto text-ink-400 hover:text-ink-100">
+      <Icon name="x" />
+    </button>
+  </div>
+)
+
 /** Dashed border that slowly marches; the parent must be `relative`. */
 export const DashBorder = ({ r = 14 }: { r?: number }) => (
   <svg className="pointer-events-none absolute inset-0 size-full overflow-visible" aria-hidden>

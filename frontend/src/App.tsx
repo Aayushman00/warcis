@@ -5,7 +5,7 @@ import { MAX_PARTY, type Mode, type Player, type Status } from './data'
 import { FriendsPage, FriendsSidebar, Home, PartyPage, type Ctx, type Party, type View } from './Hub'
 import { Matchmaking } from './Matchmaking'
 import { Profile } from './Profile'
-import { Avatar, AvatarStatus, Icon, Logo, StatusDot } from './ui'
+import { Avatar, AvatarStatus, Icon, Logo, StatusDot, Toast, type ToastMsg } from './ui'
 
 const POLL_MS = 1500 // ponytail: HTTP polling for social + queue state; move to SSE/WebSocket when load matters
 // In a match the game socket carries everything live; the poll only catches the end of it and social changes.
@@ -72,8 +72,7 @@ function Launcher({ me, setMe }: { me: Player; setMe: (p: Player | null) => void
     }
   }, [mode])
   const [fill, setFill] = useState(true)
-  const [activity, setActivity] = useState(() => [{ id: 0, text: 'Signed in to WARCIS', t: Date.now() }])
-  const [toast, setToast] = useState<string | null>(null)
+  const [toast, setToast] = useState<ToastMsg | null>(null)
   const [menu, setMenu] = useState(false)
   const [ping, setPing] = useState<number | null>(null)
   const [stats, setStats] = useState<Record<string, PlayerStats>>({})
@@ -82,15 +81,15 @@ function Launcher({ me, setMe }: { me: Player; setMe: (p: Player | null) => void
   const prev = useRef<SocialState | null>(null)
   const lastNotice = useRef<string | null>(null)
 
-  const log = (text: string) => setActivity((a) => [{ id: Date.now() + Math.random(), text, t: Date.now() }, ...a].slice(0, 6))
-  const fail = (e: unknown) => setToast((e as Error).message)
+  const log = (text: string) => setToast({ text, ok: true })
+  const fail = (e: unknown) => setToast({ text: (e as Error).message })
 
   const refresh = useCallback(async () => {
     const [s, m] = await Promise.all([api<SocialState>('/social/state'), api<MMStatus>('/matchmaking/status')])
     setSocial(s)
     setMm(m)
     const notice = m.state === 'idle' ? (m.notice ?? null) : null
-    if (notice && notice !== lastNotice.current) setToast(notice)
+    if (notice && notice !== lastNotice.current) setToast({ text: notice })
     lastNotice.current = notice
   }, [])
 
@@ -118,7 +117,7 @@ function Launcher({ me, setMe }: { me: Player; setMe: (p: Player | null) => void
     return () => clearTimeout(t)
   }, [toast])
 
-  // Turn server-side changes seen by polling into activity entries.
+  // Turn server-side changes seen by polling into toasts.
   useEffect(() => {
     const before = prev.current
     prev.current = social
@@ -202,7 +201,6 @@ function Launcher({ me, setMe }: { me: Player; setMe: (p: Player | null) => void
     party,
     mode,
     fill,
-    activity,
     stats,
     history,
     isLeader,
@@ -235,12 +233,9 @@ function Launcher({ me, setMe }: { me: Player; setMe: (p: Player | null) => void
     },
     acceptRequest: (p) => act(() => api(`/social/friend-requests/${p.requestId}/accept`, { method: 'POST' })),
     declineRequest: (p) => act(() => api(`/social/friend-requests/${p.requestId}/reject`, { method: 'POST' })),
-    cancelQueue: () => act(() => api('/matchmaking/queue', { method: 'DELETE' }), 'Left matchmaking queue'),
+    cancelQueue: () => act(() => api('/matchmaking/queue', { method: 'DELETE' })),
     matchmake: () =>
-      act(
-        () => api('/matchmaking/queue', { method: 'POST', body: { mode, fill } }),
-        `Entered queue (${party.members.length}/${MAX_PARTY})${fill ? '' : ', fill off'}`,
-      ),
+      act(() => api('/matchmaking/queue', { method: 'POST', body: { mode, fill } })),
   }
 
   const joinInvite = async () => {
@@ -315,8 +310,9 @@ function Launcher({ me, setMe }: { me: Player; setMe: (p: Player | null) => void
                 <b className="text-online">{online}</b> online
               </span>
             </button>
-            <div className="relative">
-              <button onClick={() => setMenu(!menu)} className="flex items-center gap-2.5 rounded-xl border border-white/[0.07] bg-white/[0.03] py-1 pr-3 pl-1 hover:bg-white/[0.06]">
+            <div className="relative" onKeyDown={(e) => e.key === 'Escape' && setMenu(false)}>
+              {menu && <button aria-hidden tabIndex={-1} onClick={() => setMenu(false)} className="fixed inset-0 cursor-default" />}
+              <button onClick={() => setMenu(!menu)} aria-haspopup="menu" aria-expanded={menu} aria-label={`${me.name}: status and account`} className="relative flex items-center gap-2.5 rounded-xl border border-white/[0.07] bg-white/[0.03] py-1 pr-3 pl-1 hover:bg-white/[0.06]">
                 <AvatarStatus name={me.name} status={me.status} size={32} />
                 <span className="text-left leading-tight max-sm:hidden">
                   <span className="block text-sm font-semibold">{me.name}</span>
@@ -357,10 +353,10 @@ function Launcher({ me, setMe }: { me: Player; setMe: (p: Player | null) => void
             <Matchmaking
               status={mm}
               me={me}
-              onCancel={() => act(() => api('/matchmaking/queue', { method: 'DELETE' }), 'Left matchmaking queue')}
+              onCancel={ctx.cancelQueue}
               onReady={(id) => act(() => api(`/matchmaking/matches/${id}/ready`, { method: 'POST' }))}
               onLoadout={(id, loadout) => act(() => api(`/matchmaking/matches/${id}/loadout`, { method: 'PUT', body: loadout }))}
-              onExit={(id) => act(() => api(`/matchmaking/matches/${id}/leave`, { method: 'POST' }), 'Match completed · returned to hub')}
+              onExit={(id) => act(() => api(`/matchmaking/matches/${id}/leave`, { method: 'POST' }))}
               rematch={{ canQueue: isLeader, leaderName: party.members.find((m) => m.id === party.leaderId)?.name ?? null, onQueue: ctx.matchmake }}
             />
           ) : view === 'home' ? (
@@ -406,15 +402,7 @@ function Launcher({ me, setMe }: { me: Player; setMe: (p: Player | null) => void
         </div>
       )}
 
-      {toast && (
-        <div role="alert" className="panel fixed bottom-4 left-4 z-50 flex max-w-[min(24rem,calc(100vw-2rem))] animate-rise items-center gap-3 border-foe/40 bg-ink-800 px-4 py-3 text-sm shadow-2xl">
-          <span className="size-2 shrink-0 rounded-full bg-foe" />
-          <span>{toast}</span>
-          <button onClick={() => setToast(null)} aria-label="Dismiss" className="ml-auto text-ink-400 hover:text-ink-100">
-            <Icon name="x" />
-          </button>
-        </div>
-      )}
+      {toast && <Toast msg={toast} onClose={() => setToast(null)} />}
     </div>
   )
 }

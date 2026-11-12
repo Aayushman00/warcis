@@ -6,7 +6,7 @@ import type { HistoryItem } from './api'
 import { MAX_PARTY, type Mode, type Player } from './data'
 import { FriendsPage, FriendsSidebar, Home, PartyPage, type Ctx, type Party, type View } from './Hub'
 import { Profile } from './Profile'
-import { Logo } from './ui'
+import { Logo, Toast, type ToastMsg } from './ui'
 
 const ME: Player = { id: 'me', name: 'You', tag: '0001', status: 'online' }
 const friend = (i: number, name: string, status: Player['status'], note?: string): Player => ({ id: `f${i}`, name, tag: String(1000 + i), status, note })
@@ -40,8 +40,8 @@ function Sandbox() {
   const [party, setParty] = useState<Party>({ leaderId: 'me', members: [ME], pending: [] })
   const [requestsIn, setRequestsIn] = useState<Player[]>([{ ...friend(6, 'Kestrel', 'online'), requestId: 'r1' }])
   const [queued, setQueued] = useState(false)
-  const [activity, setActivity] = useState([{ id: 1, text: 'Sandbox started · nothing is sent to the server', t: Date.now() }])
-  const log = (text: string) => setActivity((a) => [{ id: Date.now(), text, t: Date.now() }, ...a])
+  const [toast, setToast] = useState<ToastMsg | null>(null)
+  const log = (text: string) => setToast({ text, ok: true })
   const debug = new URLSearchParams(location.search).has('debug')
 
   const inParty = (id: string) => party.members.some((m) => m.id === id) || party.pending.some((m) => m.id === id)
@@ -54,7 +54,6 @@ function Sandbox() {
     party,
     mode,
     fill,
-    activity,
     stats: { me: STATS },
     history: HISTORY,
     isLeader: party.leaderId === ME.id,
@@ -99,6 +98,7 @@ function Sandbox() {
           </aside>
         )}
       </div>
+      {toast && <Toast msg={toast} onClose={() => setToast(null)} />}
     </div>
   )
 }

@@ -100,17 +100,19 @@ body {
   background-image: linear-gradient(180deg, rgb(255 255 255 / 0.03), transparent 45%);
   box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.05), var(--shadow-elev);
 }
-/* secondary surface: stat tiles, recap cards */
+/* secondary surface: stat tiles, recap cards, sidebar panels. Static: it does not react to the pointer. */
 @utility panel-quiet {
-  @apply rounded-[10px] border border-neon/25 bg-card transition duration-200 hover:-translate-y-0.5 hover:border-neon/70;
+  @apply rounded-[10px] border border-neon/25 bg-card;
   box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.05);
+}
+/* add to a panel-quiet that is a link or button: only things you can click lift and glow */
+@utility panel-link {
+  @apply transition duration-200 hover:-translate-y-0.5 hover:border-neon/70;
   &:hover { box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.05), 0 0 22px -4px color-mix(in srgb, var(--color-neon) 35%, transparent); }
 }
-/* neon card for the sidebar panels */
-@utility neon-card {
-  @apply rounded-[10px] border border-neon/25 bg-card transition duration-200 hover:-translate-y-0.5 hover:border-neon/70;
-  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.05);
-  &:hover { box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.05), 0 0 22px -4px color-mix(in srgb, var(--color-neon) 35%, transparent); }
+/* the picked option in a segmented control or tab strip */
+@utility seg-on {
+  @apply bg-gold/15 text-gold ring-1 ring-inset ring-gold/45;
 }
 /* slowly marching dashed border (SVG rect inside a relative box) */
 .dash-march { stroke-dasharray: 5 5; animation: dash-march 4s linear infinite; }

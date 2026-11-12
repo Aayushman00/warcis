@@ -9,6 +9,7 @@ export function Auth({ onAuth }: { onAuth: (s: Session) => void }) {
   const [pw, setPw] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const [showPw, setShowPw] = useState(false)
 
   // Client-side checks mirror the server's for fast feedback; the server re-validates everything.
   const submit = async (e: FormEvent) => {
@@ -63,7 +64,8 @@ export function Auth({ onAuth }: { onAuth: (s: Session) => void }) {
                 key={m}
                 type="button"
                 onClick={() => (setMode(m), setError(''))}
-                className={`rounded-md py-2 transition ${mode === m ? 'bg-ink-700 text-ink-100' : 'text-ink-400 hover:text-ink-100'}`}
+                aria-pressed={mode === m}
+                className={`rounded-md py-2 transition ${mode === m ? 'seg-on' : 'text-ink-400 hover:text-ink-100'}`}
               >
                 {m === 'in' ? 'Sign In' : 'Create Account'}
               </button>
@@ -83,13 +85,25 @@ export function Auth({ onAuth }: { onAuth: (s: Session) => void }) {
             )}
             <label className="block">
               <span className="label">Password</span>
-              <input
-                className="input mt-1.5"
-                type="password"
-                value={pw}
-                onChange={(e) => setPw(e.target.value)}
-                autoComplete={mode === 'in' ? 'current-password' : 'new-password'}
-              />
+              <span className="relative mt-1.5 block">
+                <input
+                  className="input pr-16"
+                  type={showPw ? 'text' : 'password'}
+                  value={pw}
+                  onChange={(e) => setPw(e.target.value)}
+                  autoComplete={mode === 'in' ? 'current-password' : 'new-password'}
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPw(!showPw)}
+                  aria-pressed={showPw}
+                  aria-label="Show password"
+                  className="absolute inset-y-1 right-1 rounded-md px-2.5 text-xs font-semibold text-ink-300 hover:text-ink-100"
+                >
+                  {showPw ? 'Hide' : 'Show'}
+                </button>
+              </span>
+              {mode === 'up' && <span className="mt-1.5 block text-xs text-ink-300">At least 6 characters.</span>}
             </label>
           </div>
 

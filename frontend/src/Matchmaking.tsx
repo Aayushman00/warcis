@@ -108,7 +108,7 @@ function Searching({ q, me, onCancel }: { q: QueueDTO; me: Player; onCancel: () 
         </p>
         {slow && (
           <p className="mx-auto mt-3 max-w-md text-sm text-ink-300">
-            {q.fill ? 'Try again in a minute, or pick a different region.' : 'Fill is off, so only same-size parties match. Cancel and queue with Fill on to find a game faster.'}
+            {q.fill ? 'Not many players are queueing right now. Stay in the queue, or cancel and try another mode.' : 'Fill is off, so only same-size parties match. Cancel and queue with Fill on to find a game faster.'}
           </p>
         )}
       </div>
@@ -342,6 +342,12 @@ function Lobby({
     const t = setTimeout(() => setReveal(false), 2200)
     return () => clearTimeout(t)
   }, [match.match_id, reveal])
+  // The lobby closes in a minute: say so in the tab title for anyone who tabbed away while queueing.
+  useEffect(() => {
+    const before = document.title
+    document.title = 'Match found · WARCIS'
+    return () => void (document.title = before)
+  }, [])
 
   const saved = match.loadouts[me.id] as Loadout | undefined // what the server holds for me (survives a refresh)
   const iAmReady = match.ready.includes(me.id)

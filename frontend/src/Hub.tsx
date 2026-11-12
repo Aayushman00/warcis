@@ -17,7 +17,6 @@ export interface Ctx {
   party: Party
   mode: Mode
   fill: boolean
-  activity: { id: number; text: string; t: number }[]
   stats: Record<string, PlayerStats>
   history: HistoryItem[] // newest first
   isLeader: boolean
@@ -96,7 +95,7 @@ function Segmented<T>({ value, set, options, label, title, disabled }: { value: 
           disabled={disabled}
           onClick={() => set(v)}
           className={`rounded-md px-4 py-1.5 font-display text-xs font-semibold tracking-widest uppercase transition disabled:cursor-not-allowed ${
-            value === v ? 'bg-ink-700 text-gold' : 'text-ink-300 enabled:hover:text-ink-100'
+            value === v ? 'seg-on' : 'text-ink-300 enabled:hover:text-ink-100'
           }`}
         >
           {text}
@@ -171,6 +170,7 @@ function FriendRow({ c, f, compact }: { c: Ctx; f: Player; compact?: boolean }) 
         <button
           onClick={() => c.invite(f)}
           title="Invite to party"
+          aria-label={`Invite ${f.name} to party`}
           className={`btn-ghost hover:!border-gold hover:!bg-gold hover:!text-ink-950 ${compact ? 'size-8 !p-0' : 'py-1.5 text-xs'}`}
         >
           <Icon name="plus" />
@@ -223,10 +223,10 @@ function PartyStrip(c: Ctx) {
 function InvitePicker({ c, onClose }: { c: Ctx; onClose: () => void }) {
   const list = c.friends.filter(c.canInvite)
   return (
-    <div className="panel absolute inset-x-2 top-2 z-10 animate-rise bg-ink-800 p-2 shadow-2xl">
+    <div role="dialog" aria-label="Invite friend" onKeyDown={(e) => e.key === 'Escape' && onClose()} className="panel absolute inset-x-2 top-2 z-10 animate-rise bg-ink-800 p-2 shadow-2xl">
       <div className="flex items-center justify-between px-2 py-1">
         <span className="label">Invite friend</span>
-        <button onClick={onClose} aria-label="Close" className="text-ink-300 hover:text-ink-100">
+        <button autoFocus onClick={onClose} aria-label="Close" className="text-ink-300 hover:text-ink-100">
           <Icon name="x" />
         </button>
       </div>
@@ -374,7 +374,7 @@ function StatsStrip({ stats, history }: Pick<Ctx, 'history'> & { stats?: PlayerS
   )
 }
 
-function LastMatch({ m }: { m?: HistoryItem }) {
+function LastMatch({ m, open }: { m?: HistoryItem; open: () => void }) {
   if (!m)
     return (
       <div className="panel-quiet flex flex-col justify-center p-5">
@@ -387,7 +387,10 @@ function LastMatch({ m }: { m?: HistoryItem }) {
   const mine = m.scores?.[m.my_team]
   const theirs = m.scores?.[m.my_team === 'RED' ? 'BLUE' : 'RED']
   return (
-    <div className={`panel-quiet p-5 ${win ? '!border-online/25 !bg-online/[0.07]' : m.outcome === 'LOSS' ? '!border-foe/25 !bg-foe/[0.07]' : ''}`}>
+    <button onClick={open} className={`panel-quiet panel-link relative block w-full p-5 text-left ${win ? '!border-online/25 !bg-online/[0.07]' : m.outcome === 'LOSS' ? '!border-foe/25 !bg-foe/[0.07]' : ''}`}>
+      <span className="absolute top-5 right-5 flex items-center gap-1 text-xs font-semibold text-neon">
+        Match history <Icon name="chevron" className="size-3.5" />
+      </span>
       <p className="label">Last match · {since(m.played_at)}</p>
       <p className={`mt-2 font-display text-3xl font-bold ${win ? 'text-online' : m.outcome === 'LOSS' ? 'text-foe' : 'text-ink-300'}`}>
         {win ? 'Win' : m.outcome === 'LOSS' ? 'Loss' : 'Draw'}
@@ -396,7 +399,7 @@ function LastMatch({ m }: { m?: HistoryItem }) {
       <p className="mt-1 text-sm text-ink-300">
         {m.me.kills} kills{m.mode === 'TDM' || m.mode === 'KOTH' ? '' : ` · ${m.me.captures} captures`} · {modeLabel(m.mode)}
       </p>
-    </div>
+    </button>
   )
 }
 
@@ -429,7 +432,7 @@ export function Home(c: Ctx) {
         </div>
       </Frame>
       <StatsStrip stats={c.stats[c.me.id]} history={c.history} />
-      <LastMatch m={c.history[0]} />
+      <LastMatch m={c.history[0]} open={() => c.setView('profile')} />
     </div>
   )
 }
@@ -469,7 +472,7 @@ function RecentPlayers(c: Ctx) {
   const [sent, setSent] = useState<string[]>([])
   if (!list.length) return null
   return (
-    <div className="neon-card shrink-0">
+    <div className="panel-quiet shrink-0">
       <p className="label border-b border-white/5 px-4 py-3">Recent players</p>
       <ul className="p-2">
         {list.slice(0, 4).map((p) => (
@@ -494,14 +497,22 @@ export function FriendsSidebar(c: Ctx) {
   const on = c.friends.filter((f) => f.status !== 'offline')
   const off = c.friends.filter((f) => f.status === 'offline')
   return (
-    <div className="flex h-full flex-col gap-4">
-    <div className="neon-card flex min-h-0 flex-1 flex-col">
+    <div className="flex flex-col gap-4">
+    <div className="panel-quiet">
       <div className="flex items-center justify-between border-b border-white/5 px-4 py-3">
         <p className="label">
           Friends <span className="text-online">· {on.length} online</span>
         </p>
       </div>
       <div className="max-h-[28rem] overflow-y-auto p-2">
+        {c.friends.length === 0 && (
+          <div className="px-2 py-6 text-center">
+            <p className="text-sm text-ink-300">No friends yet.</p>
+            <button onClick={() => c.setView('friends')} className="btn-ghost mt-3 py-1.5 text-xs">
+              <Icon name="plus" /> Add a friend
+            </button>
+          </div>
+        )}
         <ul>
           {on.map((f) => (
             <FriendRow key={f.id} c={c} f={f} compact />
@@ -583,7 +594,7 @@ export function FriendsPage(c: Ctx) {
       </Frame>
 
       <div className="grid gap-6 lg:grid-cols-[1fr_22rem]">
-        <section className="neon-card !translate-y-0 p-3 sm:p-4">
+        <section className="panel-quiet p-3 sm:p-4">
           <div className="inline-grid grid-cols-3 rounded-lg border border-neon/20 bg-inset p-1" role="tablist" aria-label="Filter friends">
             {TABS.map((t) => (
               <button
@@ -592,7 +603,7 @@ export function FriendsPage(c: Ctx) {
                 aria-selected={tab === t}
                 onClick={() => setTab(t)}
                 className={`rounded-md px-5 py-1.5 font-display text-xs font-semibold tracking-widest uppercase transition ${
-                  tab === t ? 'bg-ink-800 text-gold shadow-[0_2px_0_-1px_var(--color-neon)]' : 'text-ink-300 hover:text-ink-100'
+                  tab === t ? 'seg-on' : 'text-ink-300 hover:text-ink-100'
                 }`}
               >
                 {t}
@@ -612,7 +623,7 @@ export function FriendsPage(c: Ctx) {
           {tab !== 'Online' && offline.length > 0 && <Section title={`Offline · ${offline.length}`} tone="bg-ink-300" open={tab === 'Offline'}>{rows(offline)}</Section>}
         </section>
 
-        <section className="neon-card h-fit !translate-y-0 p-4">
+        <section className="panel-quiet h-fit p-4">
           <h2 className="label flex items-center gap-2 !text-ink-100">
             <span aria-hidden className="h-3 w-1 rounded-full bg-gold" /> Requests · {reqs}
           </h2>

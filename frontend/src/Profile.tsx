@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api, type HistoryItem, type HistoryPage, type PlayerStats } from './api'
-import type { Player } from './data'
+import { modeLabel, type Player } from './data'
 import { Scoreboard } from './Scoreboard'
 import { Avatar, Frame, Icon } from './ui'
 
@@ -11,7 +11,7 @@ const pct = (r: number | null) => (r === null ? '–' : `${Math.round(r * 100)}%
 
 function Tile({ label, value, sub, tone }: { label: string; value: string | number; sub?: string; tone?: string }) {
   return (
-    <div className="rounded-[10px] border border-neon/20 bg-card p-3 transition duration-200 hover:-translate-y-0.5 hover:border-neon/60 sm:p-4">
+    <div className="rounded-[10px] border border-neon/20 bg-card p-3 sm:p-4">
       <p className="label">{label}</p>
       <p className={`mt-1 font-display text-3xl font-bold tabular-nums ${tone ?? ''}`}>{value}</p>
       {sub && <p className="text-xs text-ink-300">{sub}</p>}
@@ -32,7 +32,7 @@ function Row({ m, meId, open, toggle }: { m: HistoryItem; meId: string; open: bo
         <span className={`font-display text-sm font-bold tracking-[0.15em] ${win ? 'text-online' : tie ? 'text-ink-300' : 'text-foe'}`}>{win ? 'VICTORY' : tie ? 'DRAW' : 'DEFEAT'}</span>
         <span className="min-w-0">
           <span className="block truncate text-sm font-semibold">
-            Squad · {m.players.length / 2}v{m.players.length / 2}
+            {modeLabel(m.mode)} · {m.players.length / 2}v{m.players.length / 2}
           </span>
           <span className="block truncate text-xs text-ink-300">
             {when(m.played_at)} · {mmss(m.duration_ms)}
@@ -124,11 +124,16 @@ export function Profile({ me, stats }: { me: Player; stats?: PlayerStats }) {
         </div>
         <div className="panel overflow-hidden">
           {state === 'error' ? (
-            <p className="p-5 text-sm text-foe">Could not load your match history.</p>
+            <div className="flex flex-wrap items-center justify-between gap-3 p-5">
+              <p className="text-sm text-foe">Match history did not load. Check your connection and try again.</p>
+              <button onClick={reload} className="btn-ghost py-1.5 text-xs">
+                <Icon name="refresh" /> Try again
+              </button>
+            </div>
           ) : state === 'loading' && !items.length ? (
             <p className="p-5 text-sm text-ink-300">Loading…</p>
           ) : !items.length ? (
-            <p className="p-5 text-sm text-ink-300">No finished matches yet. Capture the flag to put one on the board.</p>
+            <p className="p-5 text-sm text-ink-300">No finished matches yet. Finish one and it shows up here.</p>
           ) : (
             <ul>
               {items.map((m) => (
