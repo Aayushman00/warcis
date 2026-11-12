@@ -174,7 +174,7 @@
 .g-banner-title { display: flex; align-items: center; gap: var(--g-s3); font-family: var(--g-font-display); font-weight: 800; font-size: clamp(28px, 3.6vw, 46px); line-height: 1; letter-spacing: 0.05em; color: var(--tc-light); text-shadow: 0 0 24px color-mix(in srgb, var(--tc) 55%, transparent), 0 2px 0 rgba(0, 0, 0, 0.5); white-space: nowrap; }
 .g-banner-title::before, .g-banner-title::after { content: ''; width: 48px; height: 2px; background: linear-gradient(90deg, transparent, var(--tc)); }
 .g-banner-title::after { transform: scaleX(-1); }
-.g-banner-sub { font-size: 14px; font-weight: 500; color: var(--g-ink); text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8); }
+.g-banner-sub { text-align: center; text-wrap: balance; font-size: 14px; font-weight: 500; color: var(--g-ink); text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8); }
 
 /* STALE lag meters, in the player bar's middle slot (never over the arena): mine prominent, the enemy's small */
 .g-lag { display: flex; align-items: center; gap: var(--g-s5); animation: g-swap var(--g-t-base) var(--g-t-ease); }
@@ -190,9 +190,11 @@
 .g-lag-track { position: relative; grid-column: 1 / -1; display: block; height: 6px; overflow: hidden; border-radius: 2px; background: color-mix(in srgb, var(--g-ink) 12%, transparent); box-shadow: inset 0 0 0 1px var(--g-rule); }
 .g-lag-track i { position: absolute; inset: 0 auto 0 0; background: var(--lag, var(--g-dim)); transition: width var(--g-t-fast) linear, background var(--g-t-base); }
 .g-lag-track u { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--g-ink); opacity: 0.5; }
-.g-lag-foe { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 6px; width: 150px; opacity: 0.85; }
-.g-lag-foe .g-lag-label { font-size: 10px; }
-.g-lag-foe .g-lag-track { grid-column: auto; height: 3px; }
+.g-lag-foe { display: grid; grid-template-columns: 1fr auto; align-items: center; column-gap: 6px; row-gap: 4px; width: 120px; opacity: 0.85; }
+.g-lag-foe .g-lag-label { grid-column: 1 / -1; font-size: 10px; }
+.g-lag-foe .g-lag-track { grid-column: 1; height: 4px; }
+.g-lag-foe.is-spiked { --lag: var(--g-hpLow); opacity: 1; } /* your Spike landed */
+.g-lag-foe.is-spiked .g-lag-num { color: var(--g-hpLow); }
 .g-lag-foe .g-lag-num { font-size: 13px; }
 .g-lag-foe .g-lag-num small { font-size: 10px; }
 
@@ -365,6 +367,9 @@
   .g-team-name small, .g-me-state { display: none; }
   .g-hp-track { width: 90px; }
   .g-wing { gap: var(--g-s3); padding: var(--g-s2) var(--g-s4); }
+  /* STALE: the meters are wider than an objective line; even side columns would squeeze my HP under them */
+  .g-bar:has(.g-lag) { grid-template-columns: auto 1fr auto; }
+  .g-lag { justify-content: center; }
 }
 @media (max-width: 760px) {
   .g-bar { grid-template-columns: auto 1fr auto; }

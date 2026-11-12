@@ -8,7 +8,7 @@ import { color, cssVars, other, type Team } from './game/tokens'
 import { ClassAvatar } from './Loadout'
 import { Scoreboard, type ScoreRow } from './Scoreboard'
 import { TouchControls, type TouchApi } from './game/TouchControls'
-import { Predictor, movable } from './game/predict'
+import { Predictor, movable, pickupTaker } from './game/predict'
 
 /* In-match client. The server (services/game-service) is authoritative: this component
    sends intents (held keys, aim point), renders interpolated snapshots on the canvas, and
@@ -43,7 +43,7 @@ type Hud = {
   at?: number // server time this HUD state was taken (not part of the change key)
 }
 type Row = { id: string; name: string; team: Team; captures: number; kills: number; deaths: number; rating: number; me: boolean }
-type Banner = { id: number; title: string; sub: string; team: Team }
+type Banner = { id: number; title: string; sub: string; team: Team; ms?: number } // ms: on screen (default 1800)
 type Kill = { id: number; killer: Who | null; victim: Who; mine: boolean }
 
 const KEYS: Record<string, 'up' | 'down' | 'left' | 'right'> = {
@@ -254,7 +254,8 @@ function LagMeters({ s }: { s: LagStores }) {
   const behind = useSyncExternalStore(s.behind.sub, s.behind.get) ?? 0
   const foe = useSyncExternalStore(s.foe.sub, s.foe.get) ?? 0
   const state = staleState(lag, behind)
-  const word = state === 'stall' ? 'Frozen' : state === 'catch' ? 'Catching up' : 'Live'
+  // past the damage cap only a Spike can have put it there: say so, red alone does not
+  const word = state === 'stall' ? (lag > LAG_MAX_MS ? 'Spiked' : 'Frozen') : state === 'catch' ? 'Catching up' : 'Live'
   const pct = (ms: number) => `${Math.min(100, (ms / LAG_CEIL_MS) * 100)}%`
   const meter = (label: string, ms: number, extra?: string) => ({ role: 'meter', 'aria-label': label, 'aria-valuemin': 0, 'aria-valuemax': LAG_CEIL_MS, 'aria-valuenow': ms, 'aria-valuetext': `${ms} ms${extra ? `, ${extra}` : ''}` })
   return (
@@ -271,7 +272,7 @@ function LagMeters({ s }: { s: LagStores }) {
           <u style={{ left: pct(LAG_MAX_MS) }} />
         </span>
       </div>
-      <div className="g-lag-foe" {...meter('Enemy view delay', foe)}>
+      <div className={`g-lag-foe ${foe > LAG_MAX_MS ? 'is-spiked' : ''}`} {...meter('Enemy view delay', foe, foe > LAG_MAX_MS ? 'spiked' : undefined)}>
         <span className="g-lag-label">Enemy view</span>
         <span className="g-lag-track">
           <i style={{ width: pct(foe) }} />
@@ -438,7 +439,7 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
       introPlayed = true
       ;([3, 2, 1] as const).forEach((n, i) => later(i * 480, () => (setIntro(n), sfx.countdown(false))))
       later(1440, () => (setIntro('go'), sfx.countdown(true)))
-      later(2540, () => (setIntro(null), setBanner({ id: ++seq, ...(tdm ? { title: 'ELIMINATE THE ENEMY', sub: stale ? 'You see enemies late · Sync clears your lag · Spike theirs' : `First team to ${KILLS_TO_WIN} kills wins` } : koth ? { title: 'HOLD THE HILL', sub: `Stand in the zone alone to score · first to ${HILL_TO_WIN}` } : { title: 'STEAL THE ENEMY FLAG', sub: 'Bring it back to your base' }), team: 'BLUE' })))
+      later(2540, () => (setIntro(null), setBanner({ id: ++seq, ...(tdm ? { title: 'ELIMINATE THE ENEMY', sub: stale ? 'You see enemies late · Sync clears your lag · Spike theirs' : `First team to ${KILLS_TO_WIN} kills wins`, ms: stale ? 4500 : undefined } : koth ? { title: 'HOLD THE HILL', sub: `Stand in the zone alone to score · first to ${HILL_TO_WIN}` } : { title: 'STEAL THE ENEMY FLAG', sub: 'Bring it back to your base' }), team: 'BLUE' })))
     }
 
     /** Turn the difference between two authoritative snapshots into feedback, timed to render time. */
@@ -501,6 +502,18 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
       }
       const scored = (['RED', 'BLUE'] as Team[]).find((x) => b.scores[x] > a.scores[x])
       if (a.hill && b.hill && a.hill.y !== b.hill.y) announce('HILL MOVED', 'Get to the new zone', mine?.team ?? 'BLUE', t)
+      // STALE: say who took a Spike / Sync and what it did, at the pad and in a banner
+      for (const k of b.pickups ?? []) {
+        const by = pickupTaker(k, a, b, mine?.team ?? 'BLUE')
+        if (!by) continue
+        const ours = by === (mine?.team ?? 'BLUE')
+        const [title, sub] =
+          k.kind === 'SPIKE'
+            ? ours ? ['ENEMY SPIKED', 'Their view of your team runs a second late'] : ['VIEW SPIKED', 'The enemy grabbed Spike · you see them a second late']
+            : ours ? ['VIEW SYNCED', 'You see enemies live again'] : ['ENEMY SYNCED', 'Their view of your team is live again']
+        announce(title, sub, by, t)
+        r.at(t, () => (r.flagEvent(k.x, k.y, by, t), sfx.pickup()))
+      }
       if (scored && ctf) {
         const base = b.flags.find((f) => f.team === scored)!
         r.at(t, () => {
@@ -745,7 +758,7 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
       window.removeEventListener('mousemove', mm)
       window.removeEventListener('mouseup', mu)
     }
-  }, [match.match_id, match.my_team, me.id, tdm, koth, ctf, touch, hpS, lagS])
+  }, [match.match_id, match.my_team, me.id, tdm, koth, ctf, stale, touch, hpS, lagS])
 
   // Keep the screen on for the match: a phone held on two sticks, or a laptop on battery, otherwise dims mid-fight.
   useEffect(() => {
@@ -830,7 +843,7 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
 
   useEffect(() => {
     if (!banner) return
-    const t = setTimeout(() => setBanner((b) => (b?.id === banner.id ? null : b)), 1800)
+    const t = setTimeout(() => setBanner((b) => (b?.id === banner.id ? null : b)), banner.ms ?? 1800)
     return () => clearTimeout(t)
   }, [banner])
 
@@ -965,7 +978,7 @@ export function Game({ match, me, onExit, rematch }: { match: MatchDTO; me: Play
             </div>
 
             {banner && !hud?.ended && (
-              <div key={banner.id} className={`g-banner ${tc(banner.team)}`} role="status">
+              <div key={banner.id} className={`g-banner ${tc(banner.team)}`} role="status" style={banner.ms ? { animationDuration: `${banner.ms}ms` } : undefined}>
                 <span className="g-banner-title">{banner.title}</span>
                 <span className="g-banner-sub">{banner.sub}</span>
               </div>

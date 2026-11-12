@@ -1,4 +1,4 @@
-import type { GMap } from './render'
+import type { GMap, GPickup, Snapshot, Team } from './render'
 
 /* Client-side prediction for MY player only. Without it my own movement showed up a full round trip plus the
    100 ms interpolation buffer after the key press. Here I move at once with the server's rules (same speed,
@@ -141,3 +141,17 @@ export function stepTracer(s: Tracer, t: number, map: GMap, rects: Rect[], circl
 
 /** Movement may happen: same gates as the server's step (intro, intermission, match over). */
 export const movable = (s: { state: string; elapsed: number; resumesAt: number | null }) => s.state === 'PLAYING' && s.elapsed >= INTRO_MS && !s.resumesAt
+
+/** STALE: which team just took pad k (ready in a, respawning in b), read off the lag it moved: Spike raises the other
+ *  team's lag, Sync zeroes the taker's. null = not taken this step, or no visible effect (lag at the ceiling, Sync at 0). */
+export function pickupTaker(k: GPickup, a: Pick<Snapshot, 'now' | 'lag' | 'pickups'>, b: Pick<Snapshot, 'now' | 'lag'>, my: Team): Team | null {
+  const q = a.pickups?.find((x) => x.id === k.id)
+  const [la, lb] = [a.lag, b.lag]
+  if (!la || !lb || !q || q.readyAt > a.now || k.readyAt <= b.now) return null
+  const foe: Team = my === 'RED' ? 'BLUE' : 'RED'
+  if (k.kind === 'SPIKE') {
+    const [rm, rf] = [lb[my] - la[my], lb[foe] - la[foe]]
+    return rm > rf && rm > 0 ? foe : rf > rm && rf > 0 ? my : null
+  }
+  return la[my] > 0 && lb[my] === 0 ? my : la[foe] > 0 && lb[foe] === 0 ? foe : null
+}

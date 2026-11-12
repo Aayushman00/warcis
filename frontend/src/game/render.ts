@@ -437,6 +437,13 @@ export class Renderer {
       ctx.arc(0, 0, 21, -Math.PI / 2, -Math.PI / 2 + Math.min(1, left / PICKUP_RESPAWN_MS[q.kind]) * TAU)
       ctx.stroke()
     }
+    // name under the pad: the icon alone does not say which pad helps you and which hurts them
+    ctx.globalAlpha = left <= 0 ? 0.9 : 0.4
+    ctx.font = `700 10px ${font.display}`
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'top'
+    ctx.fillStyle = c
+    ctx.fillText(q.kind, 0, 26)
     ctx.restore()
   }
 

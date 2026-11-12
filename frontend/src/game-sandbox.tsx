@@ -78,6 +78,7 @@ function createSim(onState: (s: Snapshot) => void) {
   let capturer: string | null = null
   // Copied from sim.py PICKUPS; the bottom Spike and the right Sync start out respawning so both looks are on screen.
   const pickups: GPickup[] = !STALE ? [] : ([['SPIKE', 600, 110], ['SPIKE', 600, 590], ['SYNC', 340, 350], ['SYNC', 860, 350]] as const).map(([kind, x, y], i) => ({ id: i + 1, kind, x, y, readyAt: i % 2 ? t0 + PICKUP_MS[kind] : 0 }))
+  const took: Partial<Record<Team, { lag: number; until: number }>> = {} // a grab overrides a team's scripted lag for 3 s
 
   const move = (p: P, dx: number, dy: number) => {
     if (!hitsWall(p.x + dx, p.y, PR)) p.x += dx
@@ -151,7 +152,12 @@ function createSim(onState: (s: Snapshot) => void) {
         move(p, p.vx * dt, p.vy * dt)
         p.dashing = now < p.dashUntil
         p.invisible = now < p.invisUntil
-        for (const k of pickups) if (now >= k.readyAt && Math.hypot(k.x - p.x, k.y - p.y) <= TOUCH) k.readyAt = now + PICKUP_MS[k.kind]
+        for (const k of pickups) {
+          if (now < k.readyAt || Math.hypot(k.x - p.x, k.y - p.y) > TOUCH) continue
+          k.readyAt = now + PICKUP_MS[k.kind]
+          // Spike: the other team's view jumps to 1.7 s (stalled); Sync: the taker's goes live
+          took[k.kind === 'SYNC' ? p.team : p.team === 'RED' ? 'BLUE' : 'RED'] = { lag: k.kind === 'SYNC' ? 0 : 1700, until: now + 3000 }
+        }
         for (const f of flags) {
           if (STALE || Math.hypot(f.x - p.x, f.y - p.y) > TOUCH) continue // STALE: no flags, so no captures end the run
           if (f.team !== p.team && f.state !== 'CARRIED' && !p.carryingFlag) {
@@ -192,6 +198,11 @@ function createSim(onState: (s: Snapshot) => void) {
       })
     }
     for (const p of players) p.rating = p.captures * 100 + p.kills * 10 - p.deaths * 3
+    const view = staleView(now - t0)
+    for (const tm of TEAMS) {
+      const o = took[tm]
+      if (o && o.until > now) [view.lag[tm], view.behind[tm]] = [o.lag, o.lag ? Math.min(view.behind[tm], o.lag) : 0]
+    }
     onState({
       t: 'state', now, elapsed: now - t0, matchMs: MATCH_MS, hardStopMs: 360000, suddenDeath: false, state, winner, decidedBy: state === 'ENDED' ? 'ROUNDS' : null,
       progress: { RED: 0, BLUE: 0 }, // ponytail: the 6:00 tiebreak progress is not simulated
@@ -201,7 +212,7 @@ function createSim(onState: (s: Snapshot) => void) {
       shots: shots.map(({ vx: _a, vy: _b, dmg: _c, exp: _d, ...s }) => s),
       barriers: [],
       hill: KOTH ? hill(now) : null,
-      ...(STALE && { ...staleView(now - t0), pickups: pickups.map((k) => ({ ...k })) }),
+      ...(STALE && { ...view, pickups: pickups.map((k) => ({ ...k })) }),
     })
   }
   // ponytail: ?mode=koth shows the zone and who holds it; hill points are not simulated here
@@ -246,7 +257,8 @@ class FakeWS {
   onclose: (() => void) | null = null
   private sim
   constructor(_url: string) {
-    const emit = (m: object) => this.onmessage?.({ data: JSON.stringify(m) })
+    // like a real socket, nothing arrives after close(): StrictMode's discarded first socket must not deliver hello
+    const emit = (m: object) => this.readyState === 1 && this.onmessage?.({ data: JSON.stringify(m) })
     this.sim = createSim(emit)
     setTimeout(() => emit({ t: 'hello', you: ME.id, map: MAP, catalog: { classes: CLASS, weapons: WEAPON } }), 0)
   }

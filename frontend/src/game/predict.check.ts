@@ -1,5 +1,5 @@
 // Self-check for the client predictor: node --experimental-strip-types src/game/predict.check.ts
-import { Predictor, spawnTracers, stepTracer } from './predict.ts'
+import { pickupTaker, Predictor, spawnTracers, stepTracer } from './predict.ts'
 
 const assert = {
   ok(c: unknown, msg = 'check failed') {
@@ -65,5 +65,19 @@ const [b] = spawnTracers({ x: 100, y: 500 }, { x: 200, y: 500 }, 'SNIPER_RIFLE',
 assert.ok(!stepTracer(b, 200, map, [[300, 450, 12, 90]], []), 'a 12 px barrier stops even a sniper round in one long frame')
 const [r] = spawnTracers({ x: 100, y: 650 }, { x: 101, y: 650 }, 'ASSAULT_RIFLE', { ...rifle, speed: 100 }, 0)
 assert.ok(stepTracer(r, 1099, map, [], []) && !stepTracer(r, 1101, map, [], []), 'range runs out at ttlMs')
+
+// STALE pickup taker, read off the lag change (I am BLUE)
+const pad = (kind: 'SPIKE' | 'SYNC', readyAt: number) => ({ id: 1, kind, x: 0, y: 0, readyAt })
+const was = (lag: [number, number], kind: 'SPIKE' | 'SYNC' = 'SPIKE') => ({ now: 1000, lag: { BLUE: lag[0], RED: lag[1] }, pickups: [pad(kind, 0)] })
+const now = (lag: [number, number]) => ({ now: 1033, lag: { BLUE: lag[0], RED: lag[1] } })
+assert.equal(pickupTaker(pad('SPIKE', 26_000), was([200, 0]), now([1190, 0]), 'BLUE'), 'RED') // my view spiked
+assert.equal(pickupTaker(pad('SPIKE', 26_000), was([200, 300]), now([190, 1290]), 'BLUE'), 'BLUE') // we spiked them
+assert.equal(pickupTaker(pad('SPIKE', 26_000), was([2000, 2000]), now([2000, 2000]), 'BLUE'), null) // both at the ceiling
+assert.equal(pickupTaker(pad('SPIKE', 26_000), was([2000, 500]), now([2000, 490]), 'BLUE'), null) // draining foe is not a taker
+assert.equal(pickupTaker(pad('SYNC', 13_000), was([700, 0], 'SYNC'), now([0, 0]), 'BLUE'), 'BLUE')
+assert.equal(pickupTaker(pad('SYNC', 13_000), was([0, 700], 'SYNC'), now([0, 0]), 'BLUE'), 'RED')
+assert.equal(pickupTaker(pad('SYNC', 13_000), was([0, 0], 'SYNC'), now([0, 0]), 'BLUE'), null) // no visible effect
+assert.equal(pickupTaker(pad('SPIKE', 0), was([200, 0]), now([1190, 0]), 'BLUE'), null) // still ready: not taken
+assert.equal(pickupTaker(pad('SPIKE', 26_000), { ...was([200, 0]), pickups: [pad('SPIKE', 5000)] }, now([1190, 0]), 'BLUE'), null) // was respawning
 
 console.log('predict ok')
